@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "start": "deno run --allow-all main.ts"
+  },
+  "imports": {
+    "@evex/linejs": "jsr:@evex/linejs@^2.1.9",
+    "hono": "npm:hono@^4.8.5"
+  }
+}
