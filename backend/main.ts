@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, Context } from "hono";
 import { cors } from "hono/cors";
 import {
   loginWithPassword,
@@ -20,8 +20,8 @@ type Env = Record<string, unknown> & {
 type D1Db = {
   prepare(sql: string): {
     bind(...args: unknown[]): {
-      first?: () => Promise<unknown>;
-      run?: () => Promise<unknown>;
+      first<T = unknown>(): Promise<T | null>;
+      run(): Promise<{ success: boolean; meta?: unknown }>;
     };
   };
 };
@@ -64,10 +64,9 @@ async function getOrCreateUser(
   db: unknown,
   email: string,
   userMid: string | null,
-  memoryStore?: MemorySessionStore,
 ): Promise<number | null> {
-  if (!db && memoryStore) {
-    // 開発環境: D1がない場合はダミーIDを返す
+  // D1がない場合（開発環境）はダミーIDを返す
+  if (!db) {
     return 1;
   }
 
@@ -75,45 +74,37 @@ async function getOrCreateUser(
   const now = new Date().toISOString();
 
   // ユーザーが存在するか確認
-  const selectStmt = d1.prepare("SELECT id FROM users WHERE email = ? LIMIT 1");
-  const selectBound = selectStmt.bind(email);
-  const selectFirstFn = selectBound.first;
+  const existingUser = await d1
+    .prepare("SELECT id FROM users WHERE email = ? LIMIT 1")
+    .bind(email)
+    .first<{ id?: number }>();
   
-  if (selectFirstFn) {
-    const existingUser = (await selectFirstFn()) as unknown as { id?: number } | null;
-    if (existingUser?.id) {
-      // 最終ログイン時刻を更新
-      const updateStmt = d1.prepare("UPDATE users SET last_login_at = ?, user_mid = ? WHERE id = ?");
-      const updateBound = updateStmt.bind(now, userMid, existingUser.id);
-      const updateRunFn = updateBound.run;
-      if (updateRunFn) await updateRunFn();
-      return existingUser.id;
-    }
+  if (existingUser?.id) {
+    // 最終ログイン時刻を更新
+    await d1
+      .prepare("UPDATE users SET last_login_at = ?, user_mid = ? WHERE id = ?")
+      .bind(now, userMid, existingUser.id)
+      .run();
+    return existingUser.id;
   }
 
   // 新規ユーザーを作成
-  const insertStmt = d1.prepare(
-    "INSERT INTO users (email, user_mid, created_at, last_login_at) VALUES (?, ?, ?, ?)"
-  );
-  const insertBound = insertStmt.bind(email, userMid, now, now);
-  const insertRunFn = insertBound.run;
-  if (insertRunFn) {
-    const result = await insertRunFn();
-    // D1のINSERT結果から新しいIDを取得
-    const newSelectStmt = d1.prepare("SELECT id FROM users WHERE email = ? LIMIT 1");
-    const newSelectBound = newSelectStmt.bind(email);
-    const newSelectFirstFn = newSelectBound.first;
-    if (newSelectFirstFn) {
-      const newUser = (await newSelectFirstFn()) as unknown as { id?: number } | null;
-      return newUser?.id ?? null;
-    }
-  }
-
-  return null;
+  await d1
+    .prepare("INSERT INTO users (email, user_mid, created_at, last_login_at) VALUES (?, ?, ?, ?)")
+    .bind(email, userMid, now, now)
+    .run();
+  
+  // D1のINSERT結果から新しいIDを取得
+  const newUser = await d1
+    .prepare("SELECT id FROM users WHERE email = ? LIMIT 1")
+    .bind(email)
+    .first<{ id?: number }>();
+  
+  return newUser?.id ?? null;
 }
 
 /**
- * セッションを D1 に保存（D1 がない場合はメモリに保存）
+ * セッションを D1 に保存
  */
 async function saveSession(
   db: unknown,
@@ -123,78 +114,75 @@ async function saveSession(
   refreshToken: string | null,
   userMid: string | null,
   userId: number | null,
-  memoryStore?: MemorySessionStore,
 ): Promise<void> {
-  if (!db && memoryStore) {
-    // 開発環境: D1 がない場合はメモリに保存
-    await memoryStore.saveSession(sessionId, authToken, expiresInHours, refreshToken ?? undefined, userMid ?? undefined);
+  // D1がない場合（開発環境）は何もしない
+  if (!db) {
+    console.log("[DEBUG] saveSession: D1 is not available");
     return;
   }
 
+  console.log("[DEBUG] saveSession: Saving session to D1:", sessionId);
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000).toISOString();
   
   const d1 = db as unknown as D1Db;
-  const stmt = d1.prepare(
-    "INSERT INTO sessions (session_id, user_id, auth_token, refresh_token, user_mid, created_at, last_accessed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET last_accessed_at = ?, expires_at = ?",
-  );
-  const bound = stmt.bind(
-    sessionId,
-    userId,
-    authToken,
-    refreshToken,
-    userMid,
-    now,
-    now,
-    expiresAt,
-    now,
-    expiresAt,
-  );
-  const runFn = bound.run;
-  if (runFn) await runFn();
+  await d1
+    .prepare(
+      "INSERT INTO sessions (session_id, user_id, auth_token, refresh_token, user_mid, created_at, last_accessed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET last_accessed_at = ?, expires_at = ?",
+    )
+    .bind(
+      sessionId,
+      userId,
+      authToken,
+      refreshToken,
+      userMid,
+      now,
+      now,
+      expiresAt,
+      now,
+      expiresAt,
+    )
+    .run();
 }
 
 /**
  * セッションから authToken を取得
  */
-async function getSessionAuthToken(db: unknown, sessionId: string, memoryStore?: MemorySessionStore): Promise<string | null> {
-  if (!db && memoryStore) {
-    // 開発環境: D1 がない場合はメモリから取得
-    return await memoryStore.getSessionAuthToken(sessionId);
+async function getSessionAuthToken(db: unknown, sessionId: string): Promise<string | null> {
+  // D1がない場合（開発環境）は空のトークンを返す
+  if (!db) {
+    console.log("[DEBUG] getSessionAuthToken: D1 is not available");
+    return null;
   }
 
+  console.log("[DEBUG] getSessionAuthToken: Fetching session from D1:", sessionId);
+  // D1から取得
   const d1 = db as unknown as D1Db;
-  const stmt = d1.prepare(
-    "SELECT auth_token, expires_at FROM sessions WHERE session_id = ? LIMIT 1",
-  );
-  const bound = stmt.bind(sessionId);
-  const firstFn = bound.first;
-  if (!firstFn) return null;
-  
-  const row = (await firstFn()) as unknown as {
-    auth_token?: string;
-    expires_at?: string;
-  } | null;
-  
+  const row = await d1
+    .prepare("SELECT auth_token, expires_at FROM sessions WHERE session_id = ? LIMIT 1")
+    .bind(sessionId)
+    .first<{ auth_token?: string; expires_at?: string }>();
+    
   if (!row) return null;
   
   // 有効期限チェック
   if (row.expires_at && new Date(row.expires_at) < new Date()) {
     // 期限切れセッションを削除
-    const delStmt = d1.prepare("DELETE FROM sessions WHERE session_id = ?");
-    const delBound = delStmt.bind(sessionId);
-    const delRunFn = delBound.run;
-    if (delRunFn) await delRunFn();
+    await d1
+      .prepare("DELETE FROM sessions WHERE session_id = ?")
+      .bind(sessionId)
+      .run();
     return null;
   }
   
   // last_accessed_at を更新
-  const updateStmt = d1.prepare("UPDATE sessions SET last_accessed_at = ? WHERE session_id = ?");
-  const updateBound = updateStmt.bind(new Date().toISOString(), sessionId);
-  const updateRunFn = updateBound.run;
-  if (updateRunFn) await updateRunFn().catch(() => {
-    // 更新失敗は無視
-  });
+  await d1
+    .prepare("UPDATE sessions SET last_accessed_at = ? WHERE session_id = ?")
+    .bind(new Date().toISOString(), sessionId)
+    .run()
+    .catch(() => {
+      // 更新失敗は無視
+    });
   
   return row.auth_token ?? null;
 }
@@ -348,32 +336,6 @@ class MemoryStorage {
   }
 }
 
-// セッション管理用のメモリストレージ
-class MemorySessionStore {
-  private sessions: Map<string, { authToken: string; refreshToken?: string; userMid?: string; expiresAt: Date }> = new Map();
-
-  async saveSession(sessionId: string, authToken: string, expiresInHours: number, refreshToken?: string, userMid?: string) {
-    const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
-    this.sessions.set(sessionId, { authToken, refreshToken, userMid, expiresAt });
-  }
-
-  async getSessionAuthToken(sessionId: string): Promise<string | null> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return null;
-    
-    if (session.expiresAt < new Date()) {
-      this.sessions.delete(sessionId);
-      return null;
-    }
-    
-    return session.authToken ?? null;
-  }
-}
-
-// グローバルメモリストレージ（開発環境用）
-const globalMemorySession = new MemorySessionStore();
-
-// -----------------------------------------------------------------------------
 // D1Storage: Cloudflare D1 を簡易的に使うためのストレージ実装
 // 必要: Worker のバインディングに D1 を `LINE_D1` という名前で追加
 // テーブル: kv (key TEXT PRIMARY KEY, value TEXT)
@@ -393,31 +355,29 @@ class D1Storage {
   async get(key: string) {
     const rk = this.realKey(key);
     const db = this.db as unknown as D1Db;
-    const stmt = db.prepare("SELECT value FROM kv WHERE key = ?");
-    const bound = stmt.bind(rk);
-    const firstFn = bound.first;
-    const row = firstFn ? (await firstFn()) : null;
-  return (row as unknown as { value?: string })?.value ?? null;
+    const row = await db
+      .prepare("SELECT value FROM kv WHERE key = ?")
+      .bind(rk)
+      .first<{ value?: string }>();
+    return row?.value ?? null;
   }
 
   async set(key: string, value: string) {
     const rk = this.realKey(key);
     const db = this.db as unknown as D1Db;
-    const stmt = db.prepare(
-      "INSERT INTO kv(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    );
-    const bound = stmt.bind(rk, value);
-    const runFn = bound.run;
-    if (runFn) await runFn();
+    await db
+      .prepare("INSERT INTO kv(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(rk, value)
+      .run();
   }
 
   async remove(key: string) {
     const rk = this.realKey(key);
     const db = this.db as unknown as D1Db;
-    const stmt = db.prepare("DELETE FROM kv WHERE key = ?");
-    const bound = stmt.bind(rk);
-    const runFn = bound.run;
-    if (runFn) await runFn();
+    await db
+      .prepare("DELETE FROM kv WHERE key = ?")
+      .bind(rk)
+      .run();
   }
 
   // BaseStorage の互換メソッド（最小実装）
@@ -428,9 +388,10 @@ class D1Storage {
   async clear() {
     const db = this.db as unknown as D1Db;
     // caution: 大量のデータがある場合は注意
-    const stmt = db.prepare("DELETE FROM kv");
-    const runFn = stmt.bind().run;
-    if (runFn) await runFn();
+    await db
+      .prepare("DELETE FROM kv")
+      .bind()
+      .run();
   }
 
   migrate() {
@@ -514,13 +475,13 @@ async function getOrCreateClient(
 // Hono アプリケーション定義
 // -----------------------------------------------------------------------------
 
-const app = new Hono();
+const app = new Hono<{ Bindings: Env }>();
 
 // === ミドルウェア ===
 app.use("/*", cors({
-  origin: "*",
+  origin: ["*"],
   allowHeaders: ["Content-Type"],
-  credentials: true,
+  credentials: false,
 }));
 
 // セッション認証ミドルウェア（公開エンドポイントは除外）
@@ -548,7 +509,7 @@ app.get("/", (c) => c.text("LINE backend (Cloudflare Workers)"));
 // =============================================================================
 // 総合 API: POST / と POST (/api以下でない他のパス)
 // =============================================================================
-const handleTotalApi = async (c: any) => {
+const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
   console.log("[DEBUG] handleTotalApi called, path:", c.req.path, "method:", c.req.method);
   
   let body: unknown;
@@ -586,11 +547,10 @@ const handleTotalApi = async (c: any) => {
 
   try {
     const d1 = (c.env as Env).LINE_D1;
-    
-    // D1がない場合でもメモリストアを使用して続行（開発環境）
+    console.log("[DEBUG] handleTotalApi D1 available:", !!d1);
 
     // sessionId から authToken を取得
-    const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
+    const authToken = await getSessionAuthToken(d1, sessionId);
     if (!authToken) {
       return c.json(
         { error: "セッションが無効です。再度ログインしてください。" },
@@ -895,14 +855,18 @@ const handleTotalApi = async (c: any) => {
     if (action === "logout") {
       // Cookieをクリア（Max-Age=0で有効期限切れにする）
       c.header('Set-Cookie', `sessionId=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
+      
       // セッションをDBから削除
       if (d1) {
         const d1db = d1 as unknown as D1Db;
         const delStmt = d1db.prepare("DELETE FROM sessions WHERE session_id = ?");
         const delBound = delStmt.bind(sessionId);
         const delRunFn = delBound.run;
-        if (delRunFn) await delRunFn();
+        if (delRunFn) await delRunFn().catch(() => {
+          // 削除失敗は無視
+        });
       }
+      
       console.info("[INFO] ログアウト:", sessionId);
       return c.json(
         { success: true, message: "ログアウトしました" },
@@ -954,10 +918,15 @@ app.get("/api/session", async (c) => {
   try {
     // CookieからセッションIDを取得
     const cookieHeader = c.req.header('Cookie') || '';
+    console.log("[DEBUG] /api/session Cookie header:", cookieHeader);
+    
     const sessionIdMatch = cookieHeader.match(/sessionId=([^;]+)/);
     const sessionId = sessionIdMatch ? sessionIdMatch[1] : undefined;
+    
+    console.log("[DEBUG] /api/session SessionId from cookie:", sessionId);
 
     if (!sessionId) {
+      console.log("[DEBUG] /api/session No session ID found");
       return c.json(
         { authenticated: false, error: "セッションが見つかりません" },
         200,
@@ -966,10 +935,13 @@ app.get("/api/session", async (c) => {
     }
 
     const d1 = (c.env as Env).LINE_D1;
+    console.log("[DEBUG] /api/session D1 available:", !!d1);
     
-    // D1がない場合はメモリストアを使用（開発環境）
-    const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
+    const authToken = await getSessionAuthToken(d1, sessionId);
+    console.log("[DEBUG] /api/session authToken found:", !!authToken);
+    
     if (!authToken) {
+      console.log("[DEBUG] /api/session Invalid or expired session");
       return c.json(
         { authenticated: false, error: "セッションが無効です" },
         200,
@@ -977,6 +949,7 @@ app.get("/api/session", async (c) => {
       );
     }
 
+    console.log("[DEBUG] /api/session Session is valid");
     return c.json(
       { 
         authenticated: true, 
@@ -1098,13 +1071,10 @@ app.post("/api/sends/", async (c) => {
         corsHeaders,
       );
     }
-
     const d1 = (c.env as Env).LINE_D1;
-    
-    // D1がない場合でもメモリストアを使用して続行（開発環境）
 
     // sessionId から authToken を取得
-    const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
+    const authToken = await getSessionAuthToken(d1, sessionId);
     if (!authToken) {
       return c.json(
         { error: "セッションが無効です。再度ログインしてください。" },
@@ -1187,8 +1157,10 @@ app.post("/api/login/password", async (c) => {
       userMid = userMidVal;
     }
 
+    console.log("[DEBUG] /api/login/password D1 available:", !!d1);
+    
     // ユーザーを取得または作成
-    const userId = await getOrCreateUser(d1, email, userMid, globalMemorySession);
+    const userId = await getOrCreateUser(d1, email, userMid);
 
     await saveSession(
       d1,
@@ -1198,7 +1170,6 @@ app.post("/api/login/password", async (c) => {
       refreshToken,
       userMid,
       userId,
-      globalMemorySession,
     );
 
     console.info("[INFO] ログインセッション作成:", sessionId);
@@ -1230,10 +1201,4 @@ app.post("/api/login/password", async (c) => {
 // -----------------------------------------------------------------------------
 // Workers エクスポート
 console.log("[INFO] LINE 操作サーバー (Worker) 準備完了");
-export default {
-  async fetch(req: Request, env: Env, ctx: unknown) {
-    // すべてのリクエストをHonoで処理
-    // Honoが処理しないパスは、Cloudflare Workersの静的アセット機能が処理する
-    return app.fetch(req, { env, ctx } as unknown as Record<string, unknown>);
-  },
-};
+export default app;

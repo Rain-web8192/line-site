@@ -79,47 +79,58 @@ export default function App() {
       // 利用規約に同意済みなので、セッションを確認
       setShowTerms(false)
       
-      // セッション確認APIを使用
-      fetch('/api/session', {
-        method: 'GET',
-        credentials: 'include',
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (data.authenticated) {
-            // セッション有効 - チャットリストを取得
-            setSessionId(data.sessionId)
-            fetch('/api/action', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'squares' }),
-              credentials: 'include',
-            })
-              .then(res => res.json())
-              .then(chatsData => {
-                if (chatsData.error || !Array.isArray(chatsData.result)) {
+      // ローカルストレージからセッションIDを取得
+      const savedSessionId = localStorage.getItem('sessionId')
+      
+      if (savedSessionId) {
+        // セッション確認APIを使用（sessionIdをボディに含める）
+        fetch('/api/session', {
+          method: 'GET',
+          credentials: 'include',
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (data.authenticated) {
+              // セッション有効 - チャットリストを取得
+              setSessionId(savedSessionId)
+              fetch('/api/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'squares', sessionId: savedSessionId }),
+                credentials: 'include',
+              })
+                .then(res => res.json())
+                .then(chatsData => {
+                  if (chatsData.error || !Array.isArray(chatsData.result)) {
+                    setShowLoginModal(true)
+                    setIsLoggedIn(false)
+                  } else {
+                    setIsLoggedIn(true)
+                    setShowLoginModal(false)
+                    setChats(chatsData.result)
+                  }
+                })
+                .catch(() => {
                   setShowLoginModal(true)
                   setIsLoggedIn(false)
-                } else {
-                  setIsLoggedIn(true)
-                  setShowLoginModal(false)
-                  setChats(chatsData.result)
-                }
-              })
-              .catch(() => {
-                setShowLoginModal(true)
-                setIsLoggedIn(false)
-              })
-          } else {
-            // セッション無効
+                })
+            } else {
+              // セッション無効
+              setShowLoginModal(true)
+              setIsLoggedIn(false)
+              // 無効なセッションを削除
+              localStorage.removeItem('sessionId')
+            }
+          })
+          .catch(() => {
             setShowLoginModal(true)
             setIsLoggedIn(false)
-          }
-        })
-        .catch(() => {
-          setShowLoginModal(true)
-          setIsLoggedIn(false)
-        })
+          })
+      } else {
+        // セッションIDがない場合はログイン画面を表示
+        setShowLoginModal(true)
+        setIsLoggedIn(false)
+      }
     }
   }, [loadTerms])
 
@@ -173,9 +184,10 @@ export default function App() {
       })
       const result = await res.json()
       if (result.success) {
-        // セッションIDを状態に保存
+        // セッションIDを状態とローカルストレージに保存
         if (result.sessionId) {
           setSessionId(result.sessionId)
+          localStorage.setItem('sessionId', result.sessionId)
         }
         setIsLoggedIn(true)
         setShowLoginModal(false)
@@ -185,7 +197,7 @@ export default function App() {
         const data = await fetch('/api/action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'squares' }),
+          body: JSON.stringify({ action: 'squares', sessionId: result.sessionId }),
           credentials: 'include', // Cookieを含める
         }).then(res => res.json())
         
@@ -362,15 +374,19 @@ export default function App() {
     fetch('/api/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'logout' }),
+      body: JSON.stringify({ action: 'logout', sessionId }),
       credentials: 'include',
     }).catch(() => {})
+    
+    // ローカルストレージからセッションIDを削除
+    localStorage.removeItem('sessionId')
     
     setIsLoggedIn(false)
     setShowLoginModal(true)
     setChats([])
     setSelectedChat(null)
     setChatEvents([])
+    setSessionId('')
   }
 
   function openImageModal(src) {
