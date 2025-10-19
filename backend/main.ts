@@ -832,7 +832,16 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
     // action = "send"
     // ----------------------------
     if (action === "send") {
-      await client.base.square.sendMessage({ squareChatMid, text });
+      const isPersonalOrGroup = squareChatMid.startsWith("u") || squareChatMid.startsWith("c");
+      
+      if (isPersonalOrGroup) {
+        // 個人チャット・グループチャットの場合
+        await client.base.talk.sendMessage({ to: squareChatMid, text });
+      } else {
+        // スクエアチャットの場合
+        await client.base.square.sendMessage({ squareChatMid, text });
+      }
+      
       return c.json(
         {
           message: "メッセージを送信しました",
@@ -847,9 +856,17 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
     // action = "sends"
     // ----------------------------
     if (action === "sends") {
+      const isPersonalOrGroup = squareChatMid.startsWith("u") || squareChatMid.startsWith("c");
+      
       for (let i = 0; i < sendcount; i++) {
         const processedText = processText(text);
-        await client.base.square.sendMessage({ squareChatMid, text: processedText });
+        
+        if (isPersonalOrGroup) {
+          await client.base.talk.sendMessage({ to: squareChatMid, text: processedText });
+        } else {
+          await client.base.square.sendMessage({ squareChatMid, text: processedText });
+        }
+        
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
@@ -871,7 +888,15 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
       if (!relatedMessageId) {
         return c.json({ error: "relatedMessageId は必須です" }, 400, corsHeaders);
       }
-      await client.base.square.sendMessage({ squareChatMid, text, relatedMessageId });
+      
+      const isPersonalOrGroup = squareChatMid.startsWith("u") || squareChatMid.startsWith("c");
+      
+      if (isPersonalOrGroup) {
+        await client.base.talk.sendMessage({ to: squareChatMid, text, relatedMessageId });
+      } else {
+        await client.base.square.sendMessage({ squareChatMid, text, relatedMessageId });
+      }
+      
       return c.json(
         {
           message: "リプライメッセージを送信しました",
@@ -887,6 +912,126 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
     // ----------------------------
     if (action === "messages") {
       console.debug("[DEBUG] messages アクション開始");
+      
+      // チャットタイプを判別（個人チャット・グループチャット・スクエアチャット）
+      // squareChatMid が 'u' で始まる場合は個人チャット、'c' で始まる場合はグループチャット
+      const isPersonal = squareChatMid.startsWith("u");
+      const isGroup = squareChatMid.startsWith("c");
+      const isPersonalOrGroup = isPersonal || isGroup;
+      
+      if (isPersonalOrGroup) {
+        // 個人チャット・グループチャットの場合は Talk API を使用
+        console.debug("[DEBUG] 個人/グループチャットとして処理", { isPersonal, isGroup });
+        try {
+          let rawMessages: unknown[] = [];
+          
+          if (isPersonal) {
+            // 個人チャットの場合: sync APIを使用してメッセージを取得
+            console.debug("[DEBUG] 個人チャットのメッセージを sync で取得");
+            const syncResult = await client.base.talk.sync({ limit: 50 });
+            
+            // operationsからメッセージを抽出
+            const operations = (syncResult as { operations?: unknown[] }).operations || [];
+            rawMessages = operations
+              .filter((op: unknown) => {
+                const operation = op as Record<string, unknown>;
+                const opType = operation.type;
+                return opType === 25 || opType === 26; // SEND_MESSAGE=25, RECEIVE_MESSAGE=26
+              })
+              .map((op: unknown) => {
+                const operation = op as Record<string, unknown>;
+                return operation.message;
+              })
+              .filter((msg: unknown) => {
+                const message = msg as Record<string, unknown>;
+                // 対象の個人チャットのメッセージのみフィルタ
+                return message.to === squareChatMid || message.from === squareChatMid;
+              })
+              .slice(0, 50);
+          } else if (isGroup) {
+            // グループチャットの場合: メッセージボックスから取得
+            console.debug("[DEBUG] グループチャットのメッセージをメッセージボックスから取得");
+            const boxes = await client.base.talk.getMessageBoxes({
+              messageBoxListRequest: {},
+            });
+            
+            const box = boxes.messageBoxes.find((b: { id?: string }) => b.id === squareChatMid);
+            if (!box) {
+              console.warn("[WARN] メッセージボックスが見つかりません。空の結果を返します。");
+              return c.json(
+                {
+                  events: [],
+                  profiles: {},
+                  success: true,
+                },
+                200,
+                corsHeaders,
+              );
+            }
+
+            // メッセージを取得
+            const boxData = box as unknown as {
+              id: string;
+              lastDeliveredMessageId: { messageId: string | number | bigint; deliveredTime: number | bigint };
+            };
+            rawMessages = await client.base.talk.getPreviousMessagesV2WithRequest({
+              request: {
+                messageBoxId: boxData.id,
+                endMessageId: {
+                  messageId: typeof boxData.lastDeliveredMessageId.messageId === "string"
+                    ? BigInt(boxData.lastDeliveredMessageId.messageId)
+                    : boxData.lastDeliveredMessageId.messageId,
+                  deliveredTime: typeof boxData.lastDeliveredMessageId.deliveredTime === "bigint"
+                    ? boxData.lastDeliveredMessageId.deliveredTime
+                    : BigInt(boxData.lastDeliveredMessageId.deliveredTime),
+                },
+                messagesCount: 50,
+              },
+            });
+          }
+          
+          // メッセージを整形
+          const events = (Array.isArray(rawMessages) ? rawMessages : []).map((rawMsg: unknown) => {
+            const msg = rawMsg as Record<string, unknown>;
+            return {
+              id: String(msg.id ?? ""),
+              isReceive: msg.from !== client.base.profile?.mid,
+              text: String(msg.text ?? ""),
+              deliveredTime: msg.deliveredTime,
+              contentType: msg.contentType,
+              messageRelationType: msg.messageRelationType,
+              relatedMessageId: msg.relatedMessageId,
+              profile: null, // 個人チャットの場合はプロフィール不要
+              rawEvent: { type: msg.from === client.base.profile?.mid ? "SEND_MESSAGE" : "RECEIVE_MESSAGE", payload: { message: msg } },
+              imageData: null,
+              isImage: false,
+            };
+          });
+
+          return c.json(
+            {
+              events,
+              profiles: {},
+              success: true,
+            },
+            200,
+            corsHeaders,
+          );
+        } catch (err) {
+          console.error("[ERROR] 個人/グループチャットメッセージ取得失敗", err);
+          return c.json(
+            {
+              error: "個人/グループチャットのメッセージ取得に失敗しました",
+              success: false,
+            },
+            500,
+            corsHeaders,
+          );
+        }
+      }
+      
+      // スクエアチャットの場合
+      console.debug("[DEBUG] スクエアチャットとして処理");
       const res = await client.base.square.fetchSquareChatEvents({
         squareChatMid,
         limit: 150,
