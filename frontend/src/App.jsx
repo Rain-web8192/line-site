@@ -85,6 +85,15 @@ function PlusIcon() {
   )
 }
 
+function SendIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  )
+}
+
 export default function App() {
   // terms/login
   const [termsText, setTermsText] = useState('')
@@ -693,6 +702,9 @@ export default function App() {
             </div>
             <button style={{ background: 'none', border: 'none', color: '#e1e1e1', cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="音声">
               <MicIcon />
+            </button>
+            <button style={{ background: 'none', border: 'none', color: '#06c755', cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="送信" onClick={sendMessage}>
+              <SendIcon />
             </button>
           </div>
           </div>
