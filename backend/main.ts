@@ -517,7 +517,11 @@ async function getOrCreateClient(
 const app = new Hono();
 
 // === ミドルウェア ===
-app.use("/*", cors());
+app.use("/*", cors({
+  origin: "*",
+  allowHeaders: ["Content-Type"],
+  credentials: true,
+}));
 
 // セッション認証ミドルウェア（公開エンドポイントは除外）
 app.use("/*", async (c, next) => {
@@ -541,165 +545,12 @@ app.use("/*", async (c, next) => {
 // Workers ではフロントエンドを別途配信する想定。簡易なトップレスポンスを用意。
 app.get("/", (c) => c.text("LINE backend (Cloudflare Workers)"));
 
-// -----------------------------------------------------------------------------
-// API: /api/terms-agreement   (POST)
-// -----------------------------------------------------------------------------
-app.post("/api/terms-agreement", async (c) => {
-  try {
-    const body = await c.req.json();
-
-    const userAgent = c.req.header("user-agent") ?? "unknown";
-    const deviceInfo = parseUserAgent(userAgent);
-
-  // Discord Webhook 送信
-  const webhookUrl = (c.env as Env).CONSENT_WEBHOOK_URL as string | undefined;
-    if (webhookUrl) {
-      const discordMessage = {
-        content: "利用規約への同意が記録されました",
-        embeds: [
-          {
-            title: "利用規約同意ログ",
-            color: 0x00b900,
-            fields: [
-              { name: "タイムスタンプ", value: new Date().toISOString(), inline: true },
-              { name: "ブラウザ", value: `${deviceInfo.browser} (${deviceInfo.os})`, inline: true },
-              { name: "デバイス", value: deviceInfo.device, inline: true },
-              { name: "利用規約バージョン", value: "1.0", inline: true },
-              {
-                name: "同意項目",
-                value: `18歳以上: ${body.ageConfirmed ? "✅" : "❌"}\n利用規約: ${body.termsAgreed ? "✅" : "❌"}`,
-                inline: false,
-              },
-            ],
-            footer: { text: "LINE Chat Application" },
-            timestamp: body.timestamp,
-          },
-        ],
-      };
-
-      try {
-    const res = await fetch(webhookUrl as string, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "User-Agent": "LINE-Terms-Agreement-Bot/1.0",
-          },
-          body: JSON.stringify(discordMessage),
-        });
-        if (!res.ok) {
-          console.error("[ERROR] Webhook 送信失敗", res.status, await res.text());
-        } else console.info("[INFO] Discord Webhook 送信成功");
-      } catch (err) {
-        console.error("[ERROR] Webhook エラー", err);
-      }
-    }
-
-    return c.json(
-      { success: true, message: "利用規約への同意を記録しました" },
-      200,
-      corsHeaders,
-    );
-  } catch (err) {
-    console.error("[ERROR] 利用規約同意 API", err);
-    return c.json(
-      { success: false, error: err instanceof Error ? err.message : String(err) },
-      400,
-      corsHeaders,
-    );
-  }
-});
-
-// -----------------------------------------------------------------------------
-// API: /api/login/password   (POST)
-// -----------------------------------------------------------------------------
-app.post("/api/login/password", async (c) => {
-  try {
-    const body = await c.req.json();
-    const email = body.email as string;
-    const password = body.password as string;
-    const pincode = body.pincode as string | undefined;
-
-    const d1 = (c.env as Env).LINE_D1;
-
-    const storage = d1 ? new D1Storage(d1) : new MemoryStorage();
-    const client = await loginWithPassword(
-      {
-        email,
-        password,
-        pincode,
-        onPincodeRequest(pin) {
-          console.log("PINコード:", pin);
-        },
-      },
-      { device: "DESKTOPWIN", storage: storage as unknown as BaseStorageLike },
-    );
-
-    // 認証成功。セッション ID を生成して D1 に保存
-    const sessionId = generateSessionId();
-    const authTokenVal = client.base.authToken;
-    if (typeof authTokenVal !== "string") {
-      return c.json(
-        { success: false, error: "authToken not found" },
-        400,
-        corsHeaders,
-      );
-    }
-    const authToken = authTokenVal;
-    let refreshToken: string | null = null;
-    const refreshTokenVal = await client.base.storage.get("refreshToken");
-    if (typeof refreshTokenVal === "string") {
-      refreshToken = refreshTokenVal;
-    }
-    let userMid: string | null = null;
-    const userMidVal = (client.base.profile as unknown as { mid?: string })?.mid;
-    if (typeof userMidVal === "string") {
-      userMid = userMidVal;
-    }
-
-    // ユーザーを取得または作成
-    const userId = await getOrCreateUser(d1, email, userMid, globalMemorySession);
-
-    await saveSession(
-      d1,
-      sessionId,
-      authToken,
-      24,
-      refreshToken,
-      userMid,
-      userId,
-      globalMemorySession,
-    );
-
-    console.info("[INFO] ログインセッション作成:", sessionId);
-
-    return c.json(
-      {
-        success: true,
-        sessionId,
-        message: "ログインに成功しました",
-      },
-      200,
-      corsHeaders,
-    );
-  } catch (err) {
-    console.error("[ERROR] ログイン失敗:", err);
-    return c.json(
-      { success: false, error: err instanceof Error ? err.message : String(err) },
-      400,
-      corsHeaders,
-    );
-  }
-});
-
-// -----------------------------------------------------------------------------
-// 総合 API (旧: POST *) – action に応じた処理
-// -----------------------------------------------------------------------------
-app.post("*", async (c) => {
-  // 上記エンドポイントで処理済みの場合はスキップ
-  if (c.req.path.startsWith("/api/")) {
-    return c.json({ error: "Unknown API path" }, 404, corsHeaders);
-  }
-
+// =============================================================================
+// 総合 API: POST / と POST (/api以下でない他のパス)
+// =============================================================================
+const handleTotalApi = async (c: any) => {
+  console.log("[DEBUG] handleTotalApi called, path:", c.req.path, "method:", c.req.method);
+  
   let body: unknown;
   try {
     body = await c.req.json();
@@ -707,16 +558,27 @@ app.post("*", async (c) => {
     return c.json({ error: "JSON ボディが必要です" }, 400, corsHeaders);
   }
   const b = (body as Record<string, unknown> | null) ?? {};
-  const sessionId: string | undefined = b.sessionId as string | undefined;
+  
+  console.log("[DEBUG] Request body:", JSON.stringify(b));
+  
+  // CookieからセッションIDを取得
+  const cookieHeader = c.req.header('Cookie') || '';
+  const sessionIdMatch = cookieHeader.match(/sessionId=([^;]+)/);
+  const sessionId: string | undefined = sessionIdMatch ? sessionIdMatch[1] : (b.sessionId as string | undefined);
+  
+  console.log("[DEBUG] SessionId from cookie:", sessionIdMatch ? sessionIdMatch[1] : "none");
+  console.log("[DEBUG] SessionId from body:", b.sessionId);
+  console.log("[DEBUG] Final sessionId:", sessionId);
+  
   const action = b.action as string | undefined;
   const text = (b.text as string | undefined) ?? "デフォルトメッセージ";
   const squareChatMid = (b.squareChatMid as string | undefined) ?? "";
   const sendcount = Number(b.sendcount ?? b.sendCount ?? 1) || 1;
   
-  // sessionId は必須（トークン直接渡しは廃止）
+  // sessionId と action は必須
   if (!sessionId || !action) {
     return c.json(
-      { error: "sessionId と action は必須です（トークン直接渡しは廃止されました）" },
+      { error: "sessionId と action は必須です" },
       400,
       corsHeaders,
     );
@@ -724,13 +586,8 @@ app.post("*", async (c) => {
 
   try {
     const d1 = (c.env as Env).LINE_D1;
-    if (!d1) {
-      return c.json(
-        { error: "D1 database not configured" },
-        500,
-        corsHeaders,
-      );
-    }
+    
+    // D1がない場合でもメモリストアを使用して続行（開発環境）
 
     // sessionId から authToken を取得
     const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
@@ -981,6 +838,28 @@ app.post("*", async (c) => {
     }
 
     // ----------------------------
+    // action = "logout"
+    // ----------------------------
+    if (action === "logout") {
+      // Cookieをクリア（Max-Age=0で有効期限切れにする）
+      c.header('Set-Cookie', `sessionId=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
+      // セッションをDBから削除
+      if (d1) {
+        const d1db = d1 as unknown as D1Db;
+        const delStmt = d1db.prepare("DELETE FROM sessions WHERE session_id = ?");
+        const delBound = delStmt.bind(sessionId);
+        const delRunFn = delBound.run;
+        if (delRunFn) await delRunFn();
+      }
+      console.info("[INFO] ログアウト:", sessionId);
+      return c.json(
+        { success: true, message: "ログアウトしました" },
+        200,
+        corsHeaders,
+      );
+    }
+
+    // ----------------------------
     // 未定義 action
     // ----------------------------
     return c.json({ error: "Unknown action" }, 400, corsHeaders);
@@ -1014,6 +893,284 @@ app.post("*", async (c) => {
       corsHeaders,
     );
   }
+};
+
+// -----------------------------------------------------------------------------
+// API: /api/session (GET) - セッション確認
+// -----------------------------------------------------------------------------
+app.get("/api/session", async (c) => {
+  try {
+    // CookieからセッションIDを取得
+    const cookieHeader = c.req.header('Cookie') || '';
+    const sessionIdMatch = cookieHeader.match(/sessionId=([^;]+)/);
+    const sessionId = sessionIdMatch ? sessionIdMatch[1] : undefined;
+
+    if (!sessionId) {
+      return c.json(
+        { authenticated: false, error: "セッションが見つかりません" },
+        200,
+        corsHeaders,
+      );
+    }
+
+    const d1 = (c.env as Env).LINE_D1;
+    
+    // D1がない場合はメモリストアを使用（開発環境）
+    const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
+    if (!authToken) {
+      return c.json(
+        { authenticated: false, error: "セッションが無効です" },
+        200,
+        corsHeaders,
+      );
+    }
+
+    return c.json(
+      { 
+        authenticated: true, 
+        sessionId: sessionId,
+        message: "セッションは有効です" 
+      },
+      200,
+      corsHeaders,
+    );
+  } catch (err) {
+    console.error("[ERROR] セッション確認 API", err);
+    return c.json(
+      { authenticated: false, error: "エラーが発生しました" },
+      500,
+      corsHeaders,
+    );
+  }
+});
+
+// POST /api/action エンドポイント（旧 POST /）
+app.post("/api/action", handleTotalApi);
+
+// -----------------------------------------------------------------------------
+// API: /api/terms-agreement   (POST)
+// -----------------------------------------------------------------------------
+app.post("/api/terms-agreement", async (c) => {
+  try {
+    const body = await c.req.json();
+
+    const userAgent = c.req.header("user-agent") ?? "unknown";
+    const deviceInfo = parseUserAgent(userAgent);
+
+  // Discord Webhook 送信
+  const webhookUrl = (c.env as Env).CONSENT_WEBHOOK_URL as string | undefined;
+    if (webhookUrl) {
+      const discordMessage = {
+        content: "利用規約への同意が記録されました",
+        embeds: [
+          {
+            title: "利用規約同意ログ",
+            color: 0x00b900,
+            fields: [
+              { name: "タイムスタンプ", value: new Date().toISOString(), inline: true },
+              { name: "ブラウザ", value: `${deviceInfo.browser} (${deviceInfo.os})`, inline: true },
+              { name: "デバイス", value: deviceInfo.device, inline: true },
+              { name: "利用規約バージョン", value: "1.0", inline: true },
+              {
+                name: "同意項目",
+                value: `18歳以上: ${body.ageConfirmed ? "✅" : "❌"}\n利用規約: ${body.termsAgreed ? "✅" : "❌"}`,
+                inline: false,
+              },
+            ],
+            footer: { text: "LINE Chat Application" },
+            timestamp: body.timestamp,
+          },
+        ],
+      };
+
+      try {
+    const res = await fetch(webhookUrl as string, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": "LINE-Terms-Agreement-Bot/1.0",
+          },
+          body: JSON.stringify(discordMessage),
+        });
+        if (!res.ok) {
+          console.error("[ERROR] Webhook 送信失敗", res.status, await res.text());
+        } else console.info("[INFO] Discord Webhook 送信成功");
+      } catch (err) {
+        console.error("[ERROR] Webhook エラー", err);
+      }
+    }
+
+    return c.json(
+      { success: true, message: "利用規約への同意を記録しました" },
+      200,
+      corsHeaders,
+    );
+  } catch (err) {
+    console.error("[ERROR] 利用規約同意 API", err);
+    return c.json(
+      { success: false, error: err instanceof Error ? err.message : String(err) },
+      400,
+      corsHeaders,
+    );
+  }
+});
+
+// -----------------------------------------------------------------------------
+// API: /api/sends/   (POST) - 連投送信
+// -----------------------------------------------------------------------------
+app.post("/api/sends/", async (c) => {
+  try {
+    const body = await c.req.json();
+    const squareChatMid = body.squareChatMid as string | undefined;
+    const text = body.text as string | undefined;
+    const sendcount = Number(body.sendcount ?? 1) || 1;
+    const read = body.read as boolean | undefined;
+
+    if (!squareChatMid || !text) {
+      return c.json(
+        { error: "squareChatMid と text は必須です" },
+        400,
+        corsHeaders,
+      );
+    }
+
+    // CookieからセッションIDを取得
+    const cookieHeader = c.req.header('Cookie') || '';
+    const sessionIdMatch = cookieHeader.match(/sessionId=([^;]+)/);
+    const sessionId = sessionIdMatch ? sessionIdMatch[1] : undefined;
+
+    if (!sessionId) {
+      return c.json(
+        { error: "セッションが無効です。再度ログインしてください。" },
+        401,
+        corsHeaders,
+      );
+    }
+
+    const d1 = (c.env as Env).LINE_D1;
+    
+    // D1がない場合でもメモリストアを使用して続行（開発環境）
+
+    // sessionId から authToken を取得
+    const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
+    if (!authToken) {
+      return c.json(
+        { error: "セッションが無効です。再度ログインしてください。" },
+        401,
+        corsHeaders,
+      );
+    }
+
+    const client = await getOrCreateClient(authToken, undefined, c.env as Env);
+
+    // 連投送信を実行
+    for (let i = 0; i < sendcount; i++) {
+      const messageToSend = processText(text);
+      await client.base.square.sendMessage({ squareChatMid, text: messageToSend });
+      // 短い遅延を入れる
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    console.info("[INFO] 連投送信完了:", { squareChatMid, sendcount, text });
+
+    return c.json(
+      { success: true, message: "連投送信が完了しました" },
+      200,
+      corsHeaders,
+    );
+  } catch (err) {
+    console.error("[ERROR] 連投送信失敗:", err);
+    return c.json(
+      { success: false, error: err instanceof Error ? err.message : String(err) },
+      400,
+      corsHeaders,
+    );
+  }
+});
+
+// -----------------------------------------------------------------------------
+// API: /api/login/password   (POST)
+// -----------------------------------------------------------------------------
+app.post("/api/login/password", async (c) => {
+  try {
+    const body = await c.req.json();
+    const email = body.email as string;
+    const password = body.password as string;
+    const pincode = body.pincode as string | undefined;
+
+    const d1 = (c.env as Env).LINE_D1;
+
+    const storage = d1 ? new D1Storage(d1) : new MemoryStorage();
+    const client = await loginWithPassword(
+      {
+        email,
+        password,
+        pincode,
+        onPincodeRequest(pin) {
+          console.log("PINコード:", pin);
+        },
+      },
+      { device: "DESKTOPWIN", storage: storage as unknown as BaseStorageLike },
+    );
+
+    // 認証成功。セッション ID を生成して D1 に保存
+    const sessionId = generateSessionId();
+    const authTokenVal = client.base.authToken;
+    if (typeof authTokenVal !== "string") {
+      return c.json(
+        { success: false, error: "authToken not found" },
+        400,
+        corsHeaders,
+      );
+    }
+    const authToken = authTokenVal;
+    let refreshToken: string | null = null;
+    const refreshTokenVal = await client.base.storage.get("refreshToken");
+    if (typeof refreshTokenVal === "string") {
+      refreshToken = refreshTokenVal;
+    }
+    let userMid: string | null = null;
+    const userMidVal = (client.base.profile as unknown as { mid?: string })?.mid;
+    if (typeof userMidVal === "string") {
+      userMid = userMidVal;
+    }
+
+    // ユーザーを取得または作成
+    const userId = await getOrCreateUser(d1, email, userMid, globalMemorySession);
+
+    await saveSession(
+      d1,
+      sessionId,
+      authToken,
+      24,
+      refreshToken,
+      userMid,
+      userId,
+      globalMemorySession,
+    );
+
+    console.info("[INFO] ログインセッション作成:", sessionId);
+
+    // CookieにセッションIDを設定（HttpOnly, Secure, SameSite=Lax）
+    c.header('Set-Cookie', `sessionId=${sessionId}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`);
+
+    return c.json(
+      {
+        success: true,
+        message: "ログインに成功しました",
+        sessionId: sessionId,
+      },
+      200,
+      corsHeaders,
+    );
+  } catch (err) {
+    console.error("[ERROR] ログイン失敗:", err);
+    return c.json(
+      { success: false, error: err instanceof Error ? err.message : String(err) },
+      400,
+      corsHeaders,
+    );
+  }
 });
 
 // -----------------------------------------------------------------------------
@@ -1022,8 +1179,9 @@ app.post("*", async (c) => {
 // Workers エクスポート
 console.log("[INFO] LINE 操作サーバー (Worker) 準備完了");
 export default {
-  fetch(req: Request, env: Env, ctx: unknown) {
-    // Hono の fetch に env を渡すため、c.env で参照可能になります
+  async fetch(req: Request, env: Env, ctx: unknown) {
+    // すべてのリクエストをHonoで処理
+    // Honoが処理しないパスは、Cloudflare Workersの静的アセット機能が処理する
     return app.fetch(req, { env, ctx } as unknown as Record<string, unknown>);
   },
 };
