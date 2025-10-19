@@ -1,10 +1,13 @@
 name = "line-site-backend"
-main = "backend/main.ts"
-compatibility_date = "2025-10-20"
-workers_dev = true
+main = "main.ts"
+compatibility_date = "2024-12-20"
+compatibility_flags = ["no_handle_cross_request_promise_resolution", "nodejs_compat"]
 
-# D1 バインディング設定の雛形。実際にデータベースを作成したら database_name を指定してください。
+# D1 ローカル開発用設定
 [[d1_databases]]
 binding = "LINE_D1"
 database_name = "line_site_db"
+database_id = "dev"  # 開発環境用の識別子
+
+
  

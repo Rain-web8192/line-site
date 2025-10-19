@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "LINE Bot backend with Cloudflare Workers",
   "scripts": {
-    "dev": "wrangler dev main.ts --port 8787",
+    "dev": "wrangler dev main.ts --local --port 8787",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

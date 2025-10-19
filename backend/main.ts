@@ -58,7 +58,7 @@ function generateSessionId(): string {
 }
 
 /**
- * セッションを D1 に保存
+ * セッションを D1 に保存（D1 がない場合はメモリに保存）
  */
 async function saveSession(
   db: unknown,
@@ -67,7 +67,14 @@ async function saveSession(
   expiresInHours: number,
   refreshToken: string | null,
   userMid: string | null,
+  memoryStore?: MemorySessionStore,
 ): Promise<void> {
+  if (!db && memoryStore) {
+    // 開発環境: D1 がない場合はメモリに保存
+    await memoryStore.saveSession(sessionId, authToken, expiresInHours, refreshToken ?? undefined, userMid ?? undefined);
+    return;
+  }
+
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000).toISOString();
   
@@ -93,7 +100,12 @@ async function saveSession(
 /**
  * セッションから authToken を取得
  */
-async function getSessionAuthToken(db: unknown, sessionId: string): Promise<string | null> {
+async function getSessionAuthToken(db: unknown, sessionId: string, memoryStore?: MemorySessionStore): Promise<string | null> {
+  if (!db && memoryStore) {
+    // 開発環境: D1 がない場合はメモリから取得
+    return await memoryStore.getSessionAuthToken(sessionId);
+  }
+
   const d1 = db as unknown as D1Db;
   const stmt = d1.prepare(
     "SELECT auth_token, expires_at FROM sessions WHERE session_id = ? LIMIT 1",
@@ -236,6 +248,73 @@ async function getSquareMemberProfiles(
   }
   return map;
 }
+
+// -----------------------------------------------------------------------------
+// MemoryStorage: 開発用の簡易メモリストレージ実装
+// D1 がない場合はこれを使用
+// -----------------------------------------------------------------------------
+class MemoryStorage {
+  private data: Map<string, string> = new Map();
+  prefix: string;
+
+  constructor(prefix = "linejs:") {
+    this.prefix = prefix;
+  }
+
+  private realKey(key: string) {
+    return `${this.prefix}${key}`;
+  }
+
+  async get(key: string) {
+    return this.data.get(this.realKey(key)) ?? null;
+  }
+
+  async set(key: string, value: string) {
+    this.data.set(this.realKey(key), value);
+  }
+
+  async remove(key: string) {
+    this.data.delete(this.realKey(key));
+  }
+
+  async delete(key: string) {
+    await this.remove(key);
+  }
+
+  async clear() {
+    this.data.clear();
+  }
+
+  migrate() {
+    // noop
+    return;
+  }
+}
+
+// セッション管理用のメモリストレージ
+class MemorySessionStore {
+  private sessions: Map<string, { authToken: string; refreshToken?: string; userMid?: string; expiresAt: Date }> = new Map();
+
+  async saveSession(sessionId: string, authToken: string, expiresInHours: number, refreshToken?: string, userMid?: string) {
+    const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
+    this.sessions.set(sessionId, { authToken, refreshToken, userMid, expiresAt });
+  }
+
+  async getSessionAuthToken(sessionId: string): Promise<string | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    
+    if (session.expiresAt < new Date()) {
+      this.sessions.delete(sessionId);
+      return null;
+    }
+    
+    return session.authToken ?? null;
+  }
+}
+
+// グローバルメモリストレージ（開発環境用）
+const globalMemorySession = new MemorySessionStore();
 
 // -----------------------------------------------------------------------------
 // D1Storage: Cloudflare D1 を簡易的に使うためのストレージ実装
@@ -478,15 +557,8 @@ app.post("/api/login/password", async (c) => {
     const pincode = body.pincode as string | undefined;
 
     const d1 = (c.env as Env).LINE_D1;
-    if (!d1) {
-      return c.json(
-        { success: false, error: "D1 database not configured" },
-        500,
-        corsHeaders,
-      );
-    }
 
-    const storage = new D1Storage(d1);
+    const storage = d1 ? new D1Storage(d1) : new MemoryStorage();
     const client = await loginWithPassword(
       {
         email,
@@ -528,6 +600,7 @@ app.post("/api/login/password", async (c) => {
       24,
       refreshToken,
       userMid,
+      globalMemorySession,
     );
 
     console.info("[INFO] ログインセッション作成:", sessionId);
@@ -593,7 +666,7 @@ app.post("*", async (c) => {
     }
 
     // sessionId から authToken を取得
-    const authToken = await getSessionAuthToken(d1, sessionId);
+    const authToken = await getSessionAuthToken(d1, sessionId, globalMemorySession);
     if (!authToken) {
       return c.json(
         { error: "セッションが無効です。再度ログインしてください。" },
