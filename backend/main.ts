@@ -569,18 +569,54 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
       const squareChats = await client.fetchJoinedSquareChats();
 
       // 個人チャットとグループチャットを取得
-      let personalChats: unknown[] = [];
-      let groupChats: unknown[] = [];
-      
+      const personalChats: unknown[] = [];
+      const groupChats: unknown[] = [];
+
       try {
-        // 個人チャット取得を試みる
-        if ((client.base as unknown as Record<string, unknown>).talk) {
-          const talkApi = (client.base as unknown as Record<string, unknown>).talk as unknown as Record<string, unknown>;
-          if (typeof talkApi.getContacts === 'function') {
-            personalChats = (await (talkApi.getContacts as () => Promise<unknown[]>)()) as unknown[];
+        const base = client.base as unknown as Record<string, unknown>;
+        const talkService = base.talk as Record<string, unknown> | undefined;
+        const relationService = base.relation as Record<string, unknown> | undefined;
+
+        if (talkService && typeof (talkService as { getAllContactIds?: unknown }).getAllContactIds === "function") {
+          const midsResult = await (talkService as {
+            getAllContactIds: (options: { syncReason?: string }) => Promise<unknown>;
+          }).getAllContactIds({ syncReason: "INTERNAL" });
+
+          const midsCandidate = Array.isArray(midsResult)
+            ? midsResult
+            : Array.isArray((midsResult as { contactIds?: unknown }).contactIds)
+            ? (midsResult as { contactIds: unknown[] }).contactIds
+            : [];
+
+          const mids = midsCandidate.filter((mid): mid is string => typeof mid === "string");
+
+          if (mids.length > 0) {
+            if (typeof (talkService as { getContacts?: unknown }).getContacts === "function") {
+              const contacts = await (talkService as {
+                getContacts: (options: { mids: string[] }) => Promise<unknown>;
+              }).getContacts({ mids });
+              if (Array.isArray(contacts)) {
+                personalChats.push(...contacts);
+              }
+            } else if (
+              relationService &&
+              typeof (relationService as { getContactsV3?: unknown }).getContactsV3 === "function"
+            ) {
+              const contactsRes = await (relationService as {
+                getContactsV3: (options: { mids: string[] }) => Promise<{ responses?: unknown[] }>;
+              }).getContactsV3({ mids });
+              const responses = contactsRes?.responses;
+              if (Array.isArray(responses)) {
+                personalChats.push(...responses);
+              }
+            }
           }
-          if (typeof talkApi.getGroups === 'function') {
-            groupChats = (await (talkApi.getGroups as () => Promise<unknown[]>)()) as unknown[];
+        }
+
+        if (typeof (client as { fetchJoinedChats?: () => Promise<unknown[]> }).fetchJoinedChats === "function") {
+          const joinedChats = await client.fetchJoinedChats();
+          if (Array.isArray(joinedChats)) {
+            groupChats.push(...joinedChats);
           }
         }
       } catch (err) {
@@ -659,33 +695,126 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
       );
 
       // 個人チャットの情報を追加
-      const personalResult = personalChats.map((contact) => {
-        const contactData = contact as unknown as Record<string, unknown>;
-        return {
-          squareChatMid: String(contactData.mid ?? contactData.id),
-          name: String(contactData.displayName ?? contactData.name ?? 'Unknown'),
+      const personalResult: {
+        squareChatMid: string;
+        name: string;
+        chat: unknown;
+        chatType: "personal";
+        squareStatus: null;
+        chatImageObsHash?: string;
+      }[] = [];
+
+      for (const contact of personalChats) {
+        const contactData = contact as Record<string, unknown>;
+        const profile = contactData.targetProfileDetail as Record<string, unknown> | undefined;
+        const midValue =
+          (typeof contactData.mid === "string" && contactData.mid) ||
+          (typeof contactData.id === "string" && contactData.id) ||
+          (typeof contactData.userMid === "string" && contactData.userMid) ||
+          (typeof contactData.targetUserMid === "string" && contactData.targetUserMid) ||
+          (profile && typeof profile.mid === "string" && profile.mid) ||
+          null;
+        if (!midValue) continue;
+
+        const displayName =
+          (typeof contactData.displayName === "string" && contactData.displayName) ||
+          (typeof contactData.name === "string" && contactData.name) ||
+          (profile && typeof profile.displayName === "string" && profile.displayName) ||
+          "Unknown";
+
+        const pictureStatus =
+          (typeof contactData.pictureStatus === "string" && contactData.pictureStatus) ||
+          (typeof contactData.profileImageObsHash === "string" && contactData.profileImageObsHash) ||
+          (profile && typeof profile.pictureStatus === "string" && profile.pictureStatus) ||
+          (profile && typeof profile.profileImageObsHash === "string" && profile.profileImageObsHash) ||
+          undefined;
+
+        personalResult.push({
+          squareChatMid: midValue,
+          name: displayName,
           chat: contact,
-          chatType: 'personal',
+          chatType: "personal",
           squareStatus: null,
-          chatImageObsHash: contactData.pictureStatus,
-        };
-      });
+          chatImageObsHash: pictureStatus,
+        });
+      }
 
       // グループチャットの情報を追加
-      const groupResult = groupChats.map((group) => {
-        const groupData = group as unknown as Record<string, unknown>;
-        return {
-          squareChatMid: String(groupData.id ?? groupData.gid),
-          name: String(groupData.name ?? 'Unknown'),
+      const groupResult: {
+        squareChatMid: string;
+        name: string;
+        chat: unknown;
+        chatType: "group";
+        squareStatus: null;
+        chatImageObsHash?: string;
+      }[] = [];
+
+      for (const group of groupChats) {
+        if (group && typeof group === "object" && "raw" in group) {
+          const chatInstance = group as { raw: Record<string, unknown>; mid?: string; name?: string };
+          const raw = chatInstance.raw ?? {};
+          const midValue =
+            (typeof raw.chatMid === "string" && raw.chatMid) ||
+            (typeof chatInstance.mid === "string" && chatInstance.mid) ||
+            null;
+          if (!midValue) continue;
+
+          const displayName =
+            (typeof raw.chatName === "string" && raw.chatName) ||
+            (typeof chatInstance.name === "string" && chatInstance.name) ||
+            (typeof raw.name === "string" && raw.name) ||
+            "Unknown";
+
+          const pictureStatus =
+            (typeof raw.chatImageObsHash === "string" && raw.chatImageObsHash) ||
+            (typeof raw.pictureStatus === "string" && raw.pictureStatus) ||
+            undefined;
+
+          groupResult.push({
+            squareChatMid: midValue,
+            name: displayName,
+            chat: raw,
+            chatType: "group",
+            squareStatus: null,
+            chatImageObsHash: pictureStatus,
+          });
+          continue;
+        }
+
+        const groupData = group as Record<string, unknown>;
+        const midValue =
+          (typeof groupData.id === "string" && groupData.id) ||
+          (typeof groupData.gid === "string" && groupData.gid) ||
+          (typeof groupData.mid === "string" && groupData.mid) ||
+          (typeof groupData.chatMid === "string" && groupData.chatMid) ||
+          null;
+        if (!midValue) continue;
+
+        const displayName =
+          (typeof groupData.name === "string" && groupData.name) ||
+          (typeof groupData.displayName === "string" && groupData.displayName) ||
+          "Unknown";
+
+        const pictureStatus =
+          (typeof groupData.pictureStatus === "string" && groupData.pictureStatus) ||
+          (typeof groupData.chatImageObsHash === "string" && groupData.chatImageObsHash) ||
+          undefined;
+
+        groupResult.push({
+          squareChatMid: midValue,
+          name: displayName,
           chat: group,
-          chatType: 'group',
+          chatType: "group",
           squareStatus: null,
-          chatImageObsHash: groupData.pictureStatus,
-        };
-      });
+          chatImageObsHash: pictureStatus,
+        });
+      }
+
+      const personalIds = new Set(personalResult.map((p) => p.squareChatMid));
+      const filteredGroupResult = groupResult.filter((group) => !personalIds.has(group.squareChatMid));
 
       // 全てのチャットを結合
-      const result = [...squareResult, ...personalResult, ...groupResult];
+      const result = [...squareResult, ...personalResult, ...filteredGroupResult];
 
       return c.json(
         {
