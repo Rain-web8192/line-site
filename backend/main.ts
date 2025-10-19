@@ -58,6 +58,61 @@ function generateSessionId(): string {
 }
 
 /**
+ * ユーザーをD1に保存または取得
+ */
+async function getOrCreateUser(
+  db: unknown,
+  email: string,
+  userMid: string | null,
+  memoryStore?: MemorySessionStore,
+): Promise<number | null> {
+  if (!db && memoryStore) {
+    // 開発環境: D1がない場合はダミーIDを返す
+    return 1;
+  }
+
+  const d1 = db as unknown as D1Db;
+  const now = new Date().toISOString();
+
+  // ユーザーが存在するか確認
+  const selectStmt = d1.prepare("SELECT id FROM users WHERE email = ? LIMIT 1");
+  const selectBound = selectStmt.bind(email);
+  const selectFirstFn = selectBound.first;
+  
+  if (selectFirstFn) {
+    const existingUser = (await selectFirstFn()) as unknown as { id?: number } | null;
+    if (existingUser?.id) {
+      // 最終ログイン時刻を更新
+      const updateStmt = d1.prepare("UPDATE users SET last_login_at = ?, user_mid = ? WHERE id = ?");
+      const updateBound = updateStmt.bind(now, userMid, existingUser.id);
+      const updateRunFn = updateBound.run;
+      if (updateRunFn) await updateRunFn();
+      return existingUser.id;
+    }
+  }
+
+  // 新規ユーザーを作成
+  const insertStmt = d1.prepare(
+    "INSERT INTO users (email, user_mid, created_at, last_login_at) VALUES (?, ?, ?, ?)"
+  );
+  const insertBound = insertStmt.bind(email, userMid, now, now);
+  const insertRunFn = insertBound.run;
+  if (insertRunFn) {
+    const result = await insertRunFn();
+    // D1のINSERT結果から新しいIDを取得
+    const newSelectStmt = d1.prepare("SELECT id FROM users WHERE email = ? LIMIT 1");
+    const newSelectBound = newSelectStmt.bind(email);
+    const newSelectFirstFn = newSelectBound.first;
+    if (newSelectFirstFn) {
+      const newUser = (await newSelectFirstFn()) as unknown as { id?: number } | null;
+      return newUser?.id ?? null;
+    }
+  }
+
+  return null;
+}
+
+/**
  * セッションを D1 に保存（D1 がない場合はメモリに保存）
  */
 async function saveSession(
@@ -67,6 +122,7 @@ async function saveSession(
   expiresInHours: number,
   refreshToken: string | null,
   userMid: string | null,
+  userId: number | null,
   memoryStore?: MemorySessionStore,
 ): Promise<void> {
   if (!db && memoryStore) {
@@ -80,10 +136,11 @@ async function saveSession(
   
   const d1 = db as unknown as D1Db;
   const stmt = d1.prepare(
-    "INSERT INTO sessions (session_id, auth_token, refresh_token, user_mid, created_at, last_accessed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET last_accessed_at = ?, expires_at = ?",
+    "INSERT INTO sessions (session_id, user_id, auth_token, refresh_token, user_mid, created_at, last_accessed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET last_accessed_at = ?, expires_at = ?",
   );
   const bound = stmt.bind(
     sessionId,
+    userId,
     authToken,
     refreshToken,
     userMid,
@@ -462,16 +519,22 @@ const app = new Hono();
 // === ミドルウェア ===
 app.use("/*", cors());
 
-// Basic認証を全ルートに適用
-// Basic auth の簡易実装 (Workers の環境変数を参照)
+// セッション認証ミドルウェア（公開エンドポイントは除外）
 app.use("/*", async (c, next) => {
-  const user = (c.env as Env).BASIC_AUTH_USER ?? "admin";
-  const pass = (c.env as Env).BASIC_AUTH_PASS ?? "secret";
-    const auth = c.req.header("authorization");
-    if (!auth || !auth.startsWith("Basic ")) return c.text("Unauthorized", 401);
-    const b = atob(auth.replace(/^Basic /, ""));
-    const [u, p] = b.split(":", 2);
-  if (u !== user || p !== pass) return c.text("Unauthorized", 401);
+  // 公開エンドポイント（認証不要）
+  const publicPaths = [
+    "/api/terms-agreement",
+    "/api/login/password",
+  ];
+  
+  // GETリクエストやトップページも認証不要
+  if (c.req.method === "GET" || publicPaths.includes(c.req.path)) {
+    await next();
+    return;
+  }
+  
+  // POSTリクエストの場合、sessionIdの検証を行う（総合APIで実施）
+  // ここでは認証チェックをスキップし、各エンドポイントで個別に検証
   await next();
 });
 
@@ -593,6 +656,9 @@ app.post("/api/login/password", async (c) => {
       userMid = userMidVal;
     }
 
+    // ユーザーを取得または作成
+    const userId = await getOrCreateUser(d1, email, userMid, globalMemorySession);
+
     await saveSession(
       d1,
       sessionId,
@@ -600,6 +666,7 @@ app.post("/api/login/password", async (c) => {
       24,
       refreshToken,
       userMid,
+      userId,
       globalMemorySession,
     );
 

@@ -3,19 +3,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    outDir: '../backend/assets',
+    emptyOutDir: true
+  },
   server: {
-    port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8787',
-        changeOrigin: true,
-        rewrite: (path) => path
-      },
-      '/webhook': {
-        target: 'http://localhost:8787',
-        changeOrigin: true,
-        rewrite: (path) => path
-      }
-    }
+    port: 5173
   }
 })

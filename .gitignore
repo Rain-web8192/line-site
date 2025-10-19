@@ -1,6 +1,8 @@
 
 # Node modules
-node_modules/
+node_modules
 
 # Frontend-specific
 frontend/node_modules/
+
+backend/.wrangler

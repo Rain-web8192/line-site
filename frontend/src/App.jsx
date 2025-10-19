@@ -20,8 +20,8 @@ export default function App() {
   const [termsCheck, setTermsCheck] = useState(false)
 
   // auth
-  const [token, setToken] = useState('')
-  const [refreshToken, setRefreshToken] = useState('')
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [sessionId, setSessionId] = useState('')
 
   // UI state
   const [showLoginModal, setShowLoginModal] = useState(false)
@@ -52,9 +52,7 @@ export default function App() {
 
   const pollingRef = useRef(null)
 
-  // refs for inputs (to preserve same ids used by backend code if necessary)
-  const tokenRef = useRef(null)
-  const refreshTokenRef = useRef(null)
+  // refs for inputs
   const messageRef = useRef(null)
 
   // load terms
@@ -71,138 +69,135 @@ export default function App() {
   useEffect(() => {
     const agreed = localStorage.getItem('termsAgreed') === 'true'
     const version = localStorage.getItem('termsVersion')
+    const savedSessionId = localStorage.getItem('sessionId')
+    
     if (!agreed || version !== '1.0') {
       loadTerms()
       setShowTerms(true)
       setShowLoginModal(false)
+      setIsLoggedIn(false)
+    } else if (savedSessionId) {
+      // セッションIDがある場合は自動的にログイン状態にする
+      setSessionId(savedSessionId)
+      setShowTerms(false)
+      setShowLoginModal(false)
+      autoLoginWithSession(savedSessionId)
     } else {
       setShowTerms(false)
       setShowLoginModal(true)
+      setIsLoggedIn(false)
     }
   }, [loadTerms])
-
-  useEffect(() => {
-    // handle URL params for token/refreshToken
-    const urlParams = new URLSearchParams(window.location.search)
-    const t = urlParams.get('token')
-    const r = urlParams.get('refreshToken') || urlParams.get('refresh_token')
-    if (t) {
-      setToken(t)
-      if (tokenRef.current) tokenRef.current.value = t
-    }
-    if (r) {
-      setRefreshToken(r)
-      if (refreshTokenRef.current) refreshTokenRef.current.value = r
-    }
-    if (t) {
-      // auto login
-      handleModalLogin(t, r)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   useEffect(() => {
     // start polling
     if (pollingRef.current) clearInterval(pollingRef.current)
     pollingRef.current = setInterval(() => {
-      if (token && selectedChat) {
+      if (isLoggedIn && sessionId && selectedChat) {
         const el = document.getElementById('rightPane')
         const autoScroll = el ? el.scrollHeight - el.scrollTop - el.clientHeight < 5 : true
-        loadMessages(token, selectedChat.squareChatMid, autoScroll)
+        loadMessages(sessionId, selectedChat.squareChatMid, autoScroll)
       }
     }, 1000)
     return () => clearInterval(pollingRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, selectedChat])
+  }, [isLoggedIn, sessionId, selectedChat])
 
   async function callApi(body) {
-    const rt = refreshTokenRef.current ? refreshTokenRef.current.value.trim() : refreshToken
-    let url = '/'
-    if (rt) {
-      url += `?refreshToken=${encodeURIComponent(rt)}`
-      body.refreshToken = rt
-    }
+    body.sessionId = sessionId
 
-    const res = await fetch(url, {
+    const res = await fetch('/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     const data = await res.json()
-    if (data.updatedAuthToken) {
-      setToken(data.updatedAuthToken)
-      if (tokenRef.current) tokenRef.current.value = data.updatedAuthToken
-    }
-    if (data.updatedRefreshToken) {
-      setRefreshToken(data.updatedRefreshToken)
-      if (refreshTokenRef.current) refreshTokenRef.current.value = data.updatedRefreshToken
-    }
     return data
   }
 
-  async function handleModalLogin(providedToken, providedRefresh) {
-    const t = providedToken ?? (tokenRef.current ? tokenRef.current.value.trim() : '')
-    const r = providedRefresh ?? (refreshTokenRef.current ? refreshTokenRef.current.value.trim() : '')
-    if (!t) return alert('AuthTokenを入力してください')
-    setToken(t)
-    setRefreshToken(r)
-    if (tokenRef.current) tokenRef.current.value = t
-    if (refreshTokenRef.current) refreshTokenRef.current.value = r
-
+  async function autoLoginWithSession(sid) {
     try {
-      const data = await callApi({ token: t, action: 'squares' })
+      const data = await fetch('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sid, action: 'squares' }),
+      }).then(res => res.json())
+      
       if (Array.isArray(data.result)) {
         setChats(data.result)
+        setIsLoggedIn(true)
         setShowLoginModal(false)
         lastMessageIds.current.clear()
         setChatEvents([])
+      } else {
+        // セッション無効
+        localStorage.removeItem('sessionId')
+        setShowLoginModal(true)
+        setIsLoggedIn(false)
       }
     } catch (err) {
-      console.error('ログインエラー:', err)
-      alert('ログインに失敗しました')
+      console.error('自動ログインエラー:', err)
+      localStorage.removeItem('sessionId')
+      setShowLoginModal(true)
+      setIsLoggedIn(false)
     }
   }
 
-  async function handlePasswordLogin(email, password, isModal = false) {
+  async function handlePasswordLogin(email, password) {
     if (!email || !password) return alert('メールアドレスとパスワードを入力してください')
     const pincode = generateRandomPincode()
-    if (isModal) setModalGeneratedPincode(pincode)
-    else setGeneratedPincode(pincode)
+    setGeneratedPincode(pincode)
 
     try {
-      // show temporary feedback by alert or console
       const res = await fetch('/api/login/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, pincode }),
       })
       const result = await res.json()
-      if (result.success) {
-        // redirect with token
-        const currentUrl = new URL(window.location.href)
-        currentUrl.searchParams.set('token', result.authToken)
-        if (result.refreshToken) currentUrl.searchParams.set('refreshToken', result.refreshToken)
-        setTimeout(() => (window.location.href = currentUrl.toString()), 800)
+      if (result.success && result.sessionId) {
+        // セッションIDを保存してログイン状態に
+        localStorage.setItem('sessionId', result.sessionId)
+        setSessionId(result.sessionId)
+        setIsLoggedIn(true)
+        setShowLoginModal(false)
+        setGeneratedPincode('')
+        
+        // チャットリストを取得
+        const data = await fetch('/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: result.sessionId, action: 'squares' }),
+        }).then(res => res.json())
+        
+        if (Array.isArray(data.result)) {
+          setChats(data.result)
+          lastMessageIds.current.clear()
+          setChatEvents([])
+        }
       } else {
         alert(`ログインに失敗しました: ${result.error}`)
+        setGeneratedPincode('')
       }
     } catch (err) {
       alert('エラーが発生しました: ' + (err.message || err))
+      setGeneratedPincode('')
     }
   }
 
   async function getProfileIfNeeded(pid) {
     if (profileCache.current.has(pid)) return profileCache.current.get(pid)
+    if (!selectedChat) return null
     try {
-      const response = await fetch('/api/profile', {
+      const response = await fetch('/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: tokenRef.current ? tokenRef.current.value.trim() : token, pid }),
+        body: JSON.stringify({ sessionId, action: 'getProfile', pid, squareChatMid: selectedChat.squareChatMid }),
       })
-      const profile = await response.json()
-      if (profile.success) {
-        profileCache.current.set(pid, profile.data)
-        return profile.data
+      const result = await response.json()
+      if (result.success && result.profile) {
+        profileCache.current.set(pid, result.profile)
+        return result.profile
       }
     } catch (e) {
       console.error('プロフィール取得エラー:', e)
@@ -210,10 +205,14 @@ export default function App() {
     return null
   }
 
-  async function loadMessages(tk, chatMid, scrollToBottom = false) {
-    if (!tk || !chatMid) return
+  async function loadMessages(sid, chatMid, scrollToBottom = false) {
+    if (!sid || !chatMid) return
     try {
-      const data = await callApi({ token: tk, action: 'messages', squareChatMid: chatMid })
+      const data = await fetch('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sid, action: 'messages', squareChatMid: chatMid }),
+      }).then(res => res.json())
       if (data.error) return
       if (!Array.isArray(data.events)) return
 
@@ -261,16 +260,14 @@ export default function App() {
     setSelectedChat(chat)
     setChatEvents([])
     lastMessageIds.current.clear()
-    if (tokenRef.current) {
-      await loadMessages(tokenRef.current.value.trim(), chat.squareChatMid, true)
-    } else if (token) {
-      await loadMessages(token, chat.squareChatMid, true)
+    if (sessionId) {
+      await loadMessages(sessionId, chat.squareChatMid, true)
     }
   }
 
   async function sendMessage() {
     const text = messageRef.current?.value.trim() || ''
-    if (!text || !tokenRef.current?.value || !selectedChat) return alert('全て入力してください')
+    if (!text || !sessionId || !selectedChat) return alert('全て入力してください')
     try {
       if (replyingToId) {
         await replyToMessage(replyingToId, text)
@@ -278,10 +275,10 @@ export default function App() {
         if (messageRef.current) messageRef.current.value = ''
         return
       }
-      const data = await callApi({ token: tokenRef.current.value.trim(), action: 'send', squareChatMid: selectedChat.squareChatMid, text })
+      const data = await callApi({ action: 'send', squareChatMid: selectedChat.squareChatMid, text })
       if (data.message) {
         if (messageRef.current) messageRef.current.value = ''
-        await loadMessages(tokenRef.current.value.trim(), selectedChat.squareChatMid, true)
+        await loadMessages(sessionId, selectedChat.squareChatMid, true)
       } else if (data.error) alert(`エラー: ${data.message}`)
     } catch (e) {
       console.error('送信エラー:', e)
@@ -290,12 +287,11 @@ export default function App() {
   }
 
   async function replyToMessage(relatedMessageId, text) {
-    const tk = tokenRef.current?.value.trim() || token
-    if (!tk || !selectedChat || !text) return alert('必要な情報が不足しています')
+    if (!sessionId || !selectedChat || !text) return alert('必要な情報が不足しています')
     try {
-      const data = await callApi({ token: tk, action: 'replyToMessage', squareChatMid: selectedChat.squareChatMid, text, relatedMessageId })
+      const data = await callApi({ action: 'replyToMessage', squareChatMid: selectedChat.squareChatMid, text, relatedMessageId })
       if (data.message) {
-        await loadMessages(tk, selectedChat.squareChatMid, true)
+        await loadMessages(sessionId, selectedChat.squareChatMid, true)
       } else if (data.error) alert(`エラー: ${data.message}`)
     } catch (e) {
       console.error('リプライ送信エラー:', e)
@@ -310,7 +306,7 @@ export default function App() {
       const res = await fetch('/api/sends/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sendcount: repeatCount, squareChatMid: selectedChat?.squareChatMid, text: repeatText, read: readToggle }),
+        body: JSON.stringify({ sessionId, sendcount: repeatCount, squareChatMid: selectedChat?.squareChatMid, text: repeatText, read: readToggle }),
       })
       if (!res.ok) throw new Error(`送信エラー: ${res.status}`)
       const data = await res.json()
@@ -321,6 +317,16 @@ export default function App() {
       alert('送信に失敗しました')
     }
     setShowSettings(false)
+  }
+
+  function handleLogout() {
+    localStorage.removeItem('sessionId')
+    setSessionId('')
+    setIsLoggedIn(false)
+    setShowLoginModal(true)
+    setChats([])
+    setSelectedChat(null)
+    setChatEvents([])
   }
 
   function openImageModal(src) {
@@ -390,65 +396,64 @@ export default function App() {
               <div className="login-header"><h1>Rain-Web</h1></div>
               <div className="login-form">
                 <div className="input-group">
-                  <label htmlFor="modalToken">AuthToken</label>
-                  <input id="modalToken" ref={tokenRef} onChange={e => setToken(e.target.value)} placeholder="AuthTokenを入力してください" />
-                </div>
-                <div className="input-group">
-                  <label htmlFor="modalRefreshToken">RefreshToken (オプション)</label>
-                  <input id="modalRefreshToken" ref={refreshTokenRef} onChange={e => setRefreshToken(e.target.value)} placeholder="RefreshTokenを入力してください" />
-                </div>
-                <button id="modalLogin" className="login-button" onClick={() => handleModalLogin()}>トークンでログイン</button>
-                <div className="login-divider"><span>または</span></div>
-                <div className="input-group">
                   <label htmlFor="modalEmail">メールアドレス</label>
-                  <input id="modalEmail" />
+                  <input id="modalEmail" type="email" placeholder="メールアドレスを入力してください" />
                 </div>
                 <div className="input-group">
                   <label htmlFor="modalPassword">パスワード</label>
-                  <input id="modalPassword" type="password" />
+                  <input id="modalPassword" type="password" placeholder="パスワードを入力してください" />
                 </div>
-                <div className="pincode-display" id="modalPincodeDisplay" style={{ display: modalGeneratedPincode ? 'block' : 'none' }}>
-                  生成されたPINコード: <span id="modalGeneratedPincode">{modalGeneratedPincode}</span>
+                <div className="pincode-display" id="modalPincodeDisplay" style={{ display: generatedPincode ? 'block' : 'none' }}>
+                  生成されたPINコード: <span id="modalGeneratedPincode">{generatedPincode}</span>
                 </div>
-                <button id="modalPasswordLogin" className="login-button" onClick={() => handlePasswordLogin(document.getElementById('modalEmail').value, document.getElementById('modalPassword').value, true)}>メールアドレスでログイン</button>
+                <button id="modalPasswordLogin" className="login-button" onClick={() => handlePasswordLogin(document.getElementById('modalEmail').value, document.getElementById('modalPassword').value)}>ログイン</button>
                 <div id="modalResult" style={{ marginTop: 15, textAlign: 'center' }}></div>
               </div>
             </div>
           </div>
 
-          {/* Chat list area */}
-          <div id="chatButtons" style={{ padding: 12 }} tabIndex={0}>
-            {chats.map((chat, idx) => (
-              <button key={idx} className={`chat-button ${selectedChat?.squareChatMid === (chat.squareChatMid || chat.chat?.squareChatMid) ? 'active' : ''}`} onClick={() => handleSelectChat(chat)}>
-                <div className="chat-button-content">
-                  <div className="chat-icon-container">
-                    { (chat.chat?.chatImageObsHash || chat.square?.profileImageObsHash) ? (
-                      <img className="chat-icon" src={`https://obs.line-scdn.net/${chat.chat?.chatImageObsHash || chat.square?.profileImageObsHash}/preview`} alt="" onError={e => e.currentTarget.style.display = 'none'} />
-                    ) : (
-                      <div className="chat-icon-placeholder">📱</div>
-                    ) }
-                  </div>
-                  <div className="chat-info">
-                    <div className="chat-button-name">{chat.chat?.name || chat.name || 'Unknown'}</div>
-                    <div className="chat-button-id">{((chat.chat?.squareChatMid || chat.squareChatMid) || '').slice(0,8)}...</div>
-                  </div>
-                  <div className="chat-member-count">({chat.squareStatus?.memberCount || 0}人)</div>
-                </div>
-                <div className="chat-button-indicator" />
-              </button>
-            ))}
-          </div>
-          <div style={{ padding: 12 }}>
-            <button id="loadMessages" disabled={!selectedChat} onClick={() => selectedChat && loadMessages(tokenRef.current?.value || token, selectedChat.squareChatMid, true)}>過去メッセージ取得</button>
-            <span id="messageCount" style={{ marginLeft: 8 }}></span>
-          </div>
+          {/* Chat list area - only show when logged in */}
+          {isLoggedIn && (
+            <>
+              <div style={{ padding: 12, borderBottom: '1px solid #ddd', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>チャット一覧</h3>
+                <button onClick={handleLogout} style={{ padding: '6px 12px', background: '#ff4444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>ログアウト</button>
+              </div>
+              <div id="chatButtons" style={{ padding: 12 }} tabIndex={0}>
+                {chats.map((chat, idx) => (
+                  <button key={idx} className={`chat-button ${selectedChat?.squareChatMid === (chat.squareChatMid || chat.chat?.squareChatMid) ? 'active' : ''}`} onClick={() => handleSelectChat(chat)}>
+                    <div className="chat-button-content">
+                      <div className="chat-icon-container">
+                        { (chat.chat?.chatImageObsHash || chat.square?.profileImageObsHash) ? (
+                          <img className="chat-icon" src={`https://obs.line-scdn.net/${chat.chat?.chatImageObsHash || chat.square?.profileImageObsHash}/preview`} alt="" onError={e => e.currentTarget.style.display = 'none'} />
+                        ) : (
+                          <div className="chat-icon-placeholder">📱</div>
+                        ) }
+                      </div>
+                      <div className="chat-info">
+                        <div className="chat-button-name">{chat.chat?.name || chat.name || 'Unknown'}</div>
+                        <div className="chat-button-id">{((chat.chat?.squareChatMid || chat.squareChatMid) || '').slice(0,8)}...</div>
+                      </div>
+                      <div className="chat-member-count">({chat.squareStatus?.memberCount || 0}人)</div>
+                    </div>
+                    <div className="chat-button-indicator" />
+                  </button>
+                ))}
+              </div>
+              <div style={{ padding: 12 }}>
+                <button id="loadMessages" disabled={!selectedChat} onClick={() => selectedChat && loadMessages(sessionId, selectedChat.squareChatMid, true)}>過去メッセージ取得</button>
+                <span id="messageCount" style={{ marginLeft: 8 }}></span>
+              </div>
+            </>
+          )}
         </div>
 
-        <div id="rightPaneWrapper">
-          <div id="chatHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span id="chatTitle">{selectedChat ? (selectedChat.chat?.name || selectedChat.name) : '選択中のOpenChatは未選択です'}</span>
-            <button id="settingsButton" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2em' }} title="設定" onClick={() => setShowSettings(true)}>⚙</button>
-          </div>
+        {isLoggedIn && (
+          <div id="rightPaneWrapper">
+            <div id="chatHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span id="chatTitle">{selectedChat ? (selectedChat.chat?.name || selectedChat.name) : '選択中のOpenChatは未選択です'}</span>
+              <button id="settingsButton" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2em' }} title="設定" onClick={() => setShowSettings(true)}>⚙</button>
+            </div>
 
           <div id="rightPane" tabIndex={0} style={{ padding: 20, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div id="chatContent" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -495,7 +500,8 @@ export default function App() {
             </label>
             <button id="send" disabled={!selectedChat} onClick={sendMessage}>メッセージ送信</button>
           </div>
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Image modal */}
