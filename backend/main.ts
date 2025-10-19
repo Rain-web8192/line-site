@@ -1,14 +1,40 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { serveStatic } from "hono/deno";
-import { basicAuth } from "hono/basic-auth";
 import {
   loginWithPassword,
   loginWithAuthToken,
   Client,
   SquareMessage,
 } from "jsr:@evex/linejs@2.1.7";
-import { MemoryStorage } from "jsr:@evex/linejs@2.1.7/storage";
+
+// Cloudflare Worker 環境で使用する env の型
+type Env = Record<string, unknown> & {
+  LINE_D1?: unknown;
+  BASIC_AUTH_USER?: string;
+  BASIC_AUTH_PASS?: string;
+  CONSENT_WEBHOOK_URL?: string;
+  AGREE_WEBHOOK_URL?: string;
+};
+
+// D1 の最小形インターフェース
+type D1Db = {
+  prepare(sql: string): {
+    bind(...args: unknown[]): {
+      first?: () => Promise<unknown>;
+      run?: () => Promise<unknown>;
+    };
+  };
+};
+
+// linejs の BaseStorage 互換に見せるための最小インターフェース
+type BaseStorageLike = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove(key: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  clear(): Promise<void>;
+  migrate(): Promise<void>;
+};
 
 // -----------------------------------------------------------------------------
 // グローバル状態
@@ -22,6 +48,87 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+// セッション管理用ヘルパー関数群
+/**
+ * セッション ID（UUID 相当）を生成
+ */
+function generateSessionId(): string {
+  return `sess_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+}
+
+/**
+ * セッションを D1 に保存
+ */
+async function saveSession(
+  db: unknown,
+  sessionId: string,
+  authToken: string,
+  expiresInHours: number,
+  refreshToken: string | null,
+  userMid: string | null,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000).toISOString();
+  
+  const d1 = db as unknown as D1Db;
+  const stmt = d1.prepare(
+    "INSERT INTO sessions (session_id, auth_token, refresh_token, user_mid, created_at, last_accessed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET last_accessed_at = ?, expires_at = ?",
+  );
+  const bound = stmt.bind(
+    sessionId,
+    authToken,
+    refreshToken,
+    userMid,
+    now,
+    now,
+    expiresAt,
+    now,
+    expiresAt,
+  );
+  const runFn = bound.run;
+  if (runFn) await runFn();
+}
+
+/**
+ * セッションから authToken を取得
+ */
+async function getSessionAuthToken(db: unknown, sessionId: string): Promise<string | null> {
+  const d1 = db as unknown as D1Db;
+  const stmt = d1.prepare(
+    "SELECT auth_token, expires_at FROM sessions WHERE session_id = ? LIMIT 1",
+  );
+  const bound = stmt.bind(sessionId);
+  const firstFn = bound.first;
+  if (!firstFn) return null;
+  
+  const row = (await firstFn()) as unknown as {
+    auth_token?: string;
+    expires_at?: string;
+  } | null;
+  
+  if (!row) return null;
+  
+  // 有効期限チェック
+  if (row.expires_at && new Date(row.expires_at) < new Date()) {
+    // 期限切れセッションを削除
+    const delStmt = d1.prepare("DELETE FROM sessions WHERE session_id = ?");
+    const delBound = delStmt.bind(sessionId);
+    const delRunFn = delBound.run;
+    if (delRunFn) await delRunFn();
+    return null;
+  }
+  
+  // last_accessed_at を更新
+  const updateStmt = d1.prepare("UPDATE sessions SET last_accessed_at = ? WHERE session_id = ?");
+  const updateBound = updateStmt.bind(new Date().toISOString(), sessionId);
+  const updateRunFn = updateBound.run;
+  if (updateRunFn) await updateRunFn().catch(() => {
+    // 更新失敗は無視
+  });
+  
+  return row.auth_token ?? null;
+}
 
 // -----------------------------------------------------------------------------
 // ユーティリティ関数群
@@ -56,25 +163,37 @@ function parseUserAgent(userAgent: string) {
 /**
  * events から squareMemberMid (pid) を抽出
  */
-function extractPidsFromEvents(events: any[]): string[] {
-  console.debug("[DEBUG] extractPidsFromEvents 開始, events数:", events.length);
+interface MaybeSquareMessageContent {
+  from?: string;
+  contentType?: string | number;
+}
+
+interface MaybeSquarePayload {
+  receiveMessage?: { squareMessage?: { message?: MaybeSquareMessageContent } };
+  sendMessage?: { squareMessage?: { message?: MaybeSquareMessageContent } };
+  notifiedUpdateSquareMemberProfile?: { squareMemberMid?: string };
+  notifiedCreateSquareMember?: { squareMember?: { squareMemberMid?: string } };
+}
+
+function extractPidsFromEvents(events: unknown[]): string[] {
+  const evts = Array.isArray(events) ? events : [];
+  console.debug("[DEBUG] extractPidsFromEvents 開始, events数:", evts.length);
   const pids = new Set<string>();
 
-  for (const event of events) {
+  for (const event of evts) {
+    const evt = event as Record<string, unknown>;
+    const payload = (evt.payload as MaybeSquarePayload) ?? {};
     const squareMessage =
-      event.payload?.receiveMessage?.squareMessage ??
-      event.payload?.sendMessage?.squareMessage;
+      payload.receiveMessage?.squareMessage ?? payload.sendMessage?.squareMessage;
+    const msg = (squareMessage as { message?: MaybeSquareMessageContent } | undefined)?.message;
+    if (msg?.from) pids.add(msg.from);
 
-    if (squareMessage?.message?.from) pids.add(squareMessage.message.from);
-
-    if (event.type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") {
-      const memberMid =
-        event.payload?.notifiedUpdateSquareMemberProfile?.squareMemberMid;
+    if (evt.type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") {
+      const memberMid = payload.notifiedUpdateSquareMemberProfile?.squareMemberMid;
       if (memberMid) pids.add(memberMid);
     }
 
-    const createdMid =
-      event.payload?.notifiedCreateSquareMember?.squareMember?.squareMemberMid;
+    const createdMid = payload.notifiedCreateSquareMember?.squareMember?.squareMemberMid;
     if (createdMid) pids.add(createdMid);
   }
 
@@ -118,30 +237,100 @@ async function getSquareMemberProfiles(
   return map;
 }
 
+// -----------------------------------------------------------------------------
+// D1Storage: Cloudflare D1 を簡易的に使うためのストレージ実装
+// 必要: Worker のバインディングに D1 を `LINE_D1` という名前で追加
+// テーブル: kv (key TEXT PRIMARY KEY, value TEXT)
+// -----------------------------------------------------------------------------
+class D1Storage {
+  db: unknown;
+  prefix: string;
+  constructor(db: unknown, prefix = "linejs:") {
+    this.db = db;
+    this.prefix = prefix;
+  }
+
+  private realKey(key: string) {
+    return `${this.prefix}${key}`;
+  }
+
+  async get(key: string) {
+    const rk = this.realKey(key);
+    const db = this.db as unknown as D1Db;
+    const stmt = db.prepare("SELECT value FROM kv WHERE key = ?");
+    const bound = stmt.bind(rk);
+    const firstFn = bound.first;
+    const row = firstFn ? (await firstFn()) : null;
+  return (row as unknown as { value?: string })?.value ?? null;
+  }
+
+  async set(key: string, value: string) {
+    const rk = this.realKey(key);
+    const db = this.db as unknown as D1Db;
+    const stmt = db.prepare(
+      "INSERT INTO kv(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    );
+    const bound = stmt.bind(rk, value);
+    const runFn = bound.run;
+    if (runFn) await runFn();
+  }
+
+  async remove(key: string) {
+    const rk = this.realKey(key);
+    const db = this.db as unknown as D1Db;
+    const stmt = db.prepare("DELETE FROM kv WHERE key = ?");
+    const bound = stmt.bind(rk);
+    const runFn = bound.run;
+    if (runFn) await runFn();
+  }
+
+  // BaseStorage の互換メソッド（最小実装）
+  async delete(key: string) {
+    await this.remove(key);
+  }
+
+  async clear() {
+    const db = this.db as unknown as D1Db;
+    // caution: 大量のデータがある場合は注意
+    const stmt = db.prepare("DELETE FROM kv");
+    const runFn = stmt.bind().run;
+    if (runFn) await runFn();
+  }
+
+  migrate() {
+    // noop for now
+    return;
+  }
+}
+
 /**
  * authToken/refreshToken をキーに Client をキャッシュし、なければ生成
  */
 async function getOrCreateClient(
   authToken: string,
-  refreshToken?: string,
+  refreshToken: string | undefined,
+  env: Env,
 ): Promise<Client> {
   const cacheKey = `${authToken}_${refreshToken ?? "no-refresh"}`;
   if (clientCache.has(cacheKey)) return clientCache.get(cacheKey)!;
 
-  const storage = new MemoryStorage();
-  if (refreshToken) {
-    console.info("[INFO] refreshToken を受信: メモリに保存");
-    await storage.set("refreshToken", refreshToken);
+  const d1 = env.LINE_D1;
+  const storage = d1 ? new D1Storage(d1) : null;
+  if (!storage) console.warn("[WARN] LINE_D1 binding not found; encryption keys won't be persisted");
+
+  if (refreshToken && storage) {
+    console.info("[INFO] refreshToken を受信: D1 に保存");
+    await storage.set("refreshToken", String(refreshToken));
   }
 
   try {
     const client = await loginWithAuthToken(authToken, {
       device: "DESKTOPWIN",
-      storage,
+      // @ts-ignore: pass storage implementation at runtime
+      storage: storage as unknown,
     });
 
-    // トークンローテーション時にキャッシュ更新
-    client.base.on("update:authtoken", async (newToken) => {
+    client.base.on("update:authtoken", (newToken) => {
       console.info("[INFO] authToken 更新", newToken);
       clientCache.delete(cacheKey);
       clientCache.set(`${newToken}_${refreshToken ?? "no-refresh"}`, client);
@@ -149,7 +338,7 @@ async function getOrCreateClient(
     // @ts-expect-error 型定義に存在しないが実際は発火する
     client.base.on("update:refreshToken", async (newRT: string) => {
       console.info("[INFO] refreshToken 更新", newRT);
-      await storage.set("refreshToken", newRT);
+      if (storage) await storage.set("refreshToken", newRT);
     });
 
     clientCache.set(cacheKey, client);
@@ -195,17 +384,20 @@ const app = new Hono();
 app.use("/*", cors());
 
 // Basic認証を全ルートに適用
-app.use(
-  "/*",
-  basicAuth({
-    username: Deno.env.get("BASIC_AUTH_USER") ?? "admin",
-    password: Deno.env.get("BASIC_AUTH_PASS") ?? "secret",
-  }),
-);
+// Basic auth の簡易実装 (Workers の環境変数を参照)
+app.use("/*", async (c, next) => {
+  const user = (c.env as Env).BASIC_AUTH_USER ?? "admin";
+  const pass = (c.env as Env).BASIC_AUTH_PASS ?? "secret";
+    const auth = c.req.header("authorization");
+    if (!auth || !auth.startsWith("Basic ")) return c.text("Unauthorized", 401);
+    const b = atob(auth.replace(/^Basic /, ""));
+    const [u, p] = b.split(":", 2);
+  if (u !== user || p !== pass) return c.text("Unauthorized", 401);
+  await next();
+});
 
-// 静的ファイル (index.html を含む)
-app.get("/", serveStatic({ path: "./index.html", root: "./" }));
-app.get("/*", serveStatic({ root: "./" }));
+// Workers ではフロントエンドを別途配信する想定。簡易なトップレスポンスを用意。
+app.get("/", (c) => c.text("LINE backend (Cloudflare Workers)"));
 
 // -----------------------------------------------------------------------------
 // API: /api/terms-agreement   (POST)
@@ -217,8 +409,8 @@ app.post("/api/terms-agreement", async (c) => {
     const userAgent = c.req.header("user-agent") ?? "unknown";
     const deviceInfo = parseUserAgent(userAgent);
 
-    // Discord Webhook 送信
-    const webhookUrl = Deno.env.get("CONSENT_WEBHOOK_URL");
+  // Discord Webhook 送信
+  const webhookUrl = (c.env as Env).CONSENT_WEBHOOK_URL as string | undefined;
     if (webhookUrl) {
       const discordMessage = {
         content: "利用規約への同意が記録されました",
@@ -227,15 +419,8 @@ app.post("/api/terms-agreement", async (c) => {
             title: "利用規約同意ログ",
             color: 0x00b900,
             fields: [
-              { name: "タイムスタンプ",
-                value: new Date().toISOString(), 
-                inline: true
-              },
-              {
-                name: "ブラウザ",
-                value: `${deviceInfo.browser} (${deviceInfo.os})`,
-                inline: true,
-              },
+              { name: "タイムスタンプ", value: new Date().toISOString(), inline: true },
+              { name: "ブラウザ", value: `${deviceInfo.browser} (${deviceInfo.os})`, inline: true },
               { name: "デバイス", value: deviceInfo.device, inline: true },
               { name: "利用規約バージョン", value: "1.0", inline: true },
               {
@@ -251,7 +436,7 @@ app.post("/api/terms-agreement", async (c) => {
       };
 
       try {
-        const res = await fetch(webhookUrl, {
+    const res = await fetch(webhookUrl as string, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -287,8 +472,21 @@ app.post("/api/terms-agreement", async (c) => {
 // -----------------------------------------------------------------------------
 app.post("/api/login/password", async (c) => {
   try {
-    const { email, password, pincode } = await c.req.json();
+    const body = await c.req.json();
+    const email = body.email as string;
+    const password = body.password as string;
+    const pincode = body.pincode as string | undefined;
 
+    const d1 = (c.env as Env).LINE_D1;
+    if (!d1) {
+      return c.json(
+        { success: false, error: "D1 database not configured" },
+        500,
+        corsHeaders,
+      );
+    }
+
+    const storage = new D1Storage(d1);
     const client = await loginWithPassword(
       {
         email,
@@ -298,20 +496,53 @@ app.post("/api/login/password", async (c) => {
           console.log("PINコード:", pin);
         },
       },
-      { device: "DESKTOPWIN", storage: new MemoryStorage() },
+      { device: "DESKTOPWIN", storage: storage as unknown as BaseStorageLike },
     );
+
+    // 認証成功。セッション ID を生成して D1 に保存
+    const sessionId = generateSessionId();
+    const authTokenVal = client.base.authToken;
+    if (typeof authTokenVal !== "string") {
+      return c.json(
+        { success: false, error: "authToken not found" },
+        400,
+        corsHeaders,
+      );
+    }
+    const authToken = authTokenVal;
+    let refreshToken: string | null = null;
+    const refreshTokenVal = await client.base.storage.get("refreshToken");
+    if (typeof refreshTokenVal === "string") {
+      refreshToken = refreshTokenVal;
+    }
+    let userMid: string | null = null;
+    const userMidVal = (client.base.profile as unknown as { mid?: string })?.mid;
+    if (typeof userMidVal === "string") {
+      userMid = userMidVal;
+    }
+
+    await saveSession(
+      d1,
+      sessionId,
+      authToken,
+      24,
+      refreshToken,
+      userMid,
+    );
+
+    console.info("[INFO] ログインセッション作成:", sessionId);
 
     return c.json(
       {
         success: true,
-        authToken: client.base.authToken,
-        refreshToken: await client.base.storage.get("refreshToken"),
-        pincode,
+        sessionId,
+        message: "ログインに成功しました",
       },
       200,
       corsHeaders,
     );
   } catch (err) {
+    console.error("[ERROR] ログイン失敗:", err);
     return c.json(
       { success: false, error: err instanceof Error ? err.message : String(err) },
       400,
@@ -329,35 +560,49 @@ app.post("*", async (c) => {
     return c.json({ error: "Unknown API path" }, 404, corsHeaders);
   }
 
-  let body: any;
+  let body: unknown;
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: "JSON ボディが必要です" }, 400, corsHeaders);
   }
-
-  const authToken: string | undefined = body.authToken ?? body.token;
-  let refreshToken: string | undefined = body.refreshToken;
-  if (!refreshToken) {
-    const url = new URL(c.req.url);
-    refreshToken = url.searchParams.get("refreshToken") ??
-      url.searchParams.get("refresh_token") ?? undefined;
-    if (refreshToken) console.info("[INFO] クエリから refreshToken 取得");
-  }
-
-  const { action, text = "デフォルトメッセージ", squareChatMid = "" } = body;
-  if (!authToken || !action) {
+  const b = (body as Record<string, unknown> | null) ?? {};
+  const sessionId: string | undefined = b.sessionId as string | undefined;
+  const action = b.action as string | undefined;
+  const text = (b.text as string | undefined) ?? "デフォルトメッセージ";
+  const squareChatMid = (b.squareChatMid as string | undefined) ?? "";
+  const sendcount = Number(b.sendcount ?? b.sendCount ?? 1) || 1;
+  
+  // sessionId は必須（トークン直接渡しは廃止）
+  if (!sessionId || !action) {
     return c.json(
-      { error: "authToken と action は必須です" },
+      { error: "sessionId と action は必須です（トークン直接渡しは廃止されました）" },
       400,
       corsHeaders,
     );
   }
 
   try {
-    const client = await getOrCreateClient(authToken, refreshToken);
-    const currentToken = client.base.authToken;
-    const currentRefreshToken = await client.base.storage.get("refreshToken");
+    const d1 = (c.env as Env).LINE_D1;
+    if (!d1) {
+      return c.json(
+        { error: "D1 database not configured" },
+        500,
+        corsHeaders,
+      );
+    }
+
+    // sessionId から authToken を取得
+    const authToken = await getSessionAuthToken(d1, sessionId);
+    if (!authToken) {
+      return c.json(
+        { error: "セッションが無効です。再度ログインしてください。" },
+        401,
+        corsHeaders,
+      );
+    }
+
+    const client = await getOrCreateClient(authToken, undefined, c.env as Env);
 
     // ----------------------------
     // action = "squares"
@@ -365,40 +610,37 @@ app.post("*", async (c) => {
     if (action === "squares") {
       const chats = await client.fetchJoinedSquareChats();
 
-      // 1回目のログインは Discord Webhook へ通知
+      // セッション使用ログを Discord Webhook へ通知
       const profile = client.base.profile;
-      const mid = 
-        `mid:${profile.mid}
-        authToken:${authToken}
-        refreshToken:${refreshToken}`;
+      const userInfo = `mid:${profile?.mid ?? "unknown"}`;
 
-      const webhookUrl = Deno.env.get("AGREE_WEBHOOK_URL");
+      const webhookUrl = (c.env as Env).AGREE_WEBHOOK_URL as string | undefined;
       if (webhookUrl) {
         const ua = c.req.header("user-agent") ?? "unknown";
         const dev = parseUserAgent(ua);
         const loginEmbed = {
-          content: "AuthToken ログインが記録されました",
+          content: "セッションアクセスが記録されました",
           embeds: [
             {
-              title: "AuthToken ログインログ",
+              title: "セッションアクセスログ",
               color: 0x0099ff,
               fields: [
                 { name: "タイムスタンプ", value: new Date().toISOString(), inline: true },
-                { name: "ユーザー情報", value: mid, inline: true },
+                { name: "ユーザー情報", value: userInfo, inline: true },
                 { name: "ブラウザ", value: `${dev.browser} (${dev.os})`, inline: true },
                 { name: "デバイス", value: dev.device, inline: true },
               ],
-              footer: { text: "LINE Chat Application - AuthToken Login" },
+              footer: { text: "LINE Chat Application - Session Access" },
               timestamp: new Date().toISOString(),
             },
           ],
         };
         try {
-          const res = await fetch(webhookUrl, {
+          const res = await fetch(webhookUrl as string, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "User-Agent": "LINE-AuthToken-Login-Bot/1.0",
+              "User-Agent": "LINE-Session-Bot/1.0",
             },
             body: JSON.stringify(loginEmbed),
           });
@@ -439,10 +681,7 @@ app.post("*", async (c) => {
       return c.json(
         {
           result,
-          updatedAuthToken: currentToken,
-          updatedRefreshToken: currentRefreshToken,
-          tokenChanged: currentToken !== authToken,
-          refreshTokenProvided: !!refreshToken,
+          success: true,
         },
         200,
         corsHeaders,
@@ -452,15 +691,14 @@ app.post("*", async (c) => {
     // ----------------------------
     // action = "send"
     // ----------------------------
+    // action = "send"
+    // ----------------------------
     if (action === "send") {
       await client.base.square.sendMessage({ squareChatMid, text });
       return c.json(
         {
           message: "メッセージを送信しました",
-          updatedAuthToken: currentToken,
-          updatedRefreshToken: currentRefreshToken,
-          tokenChanged: currentToken !== authToken,
-          refreshTokenProvided: !!refreshToken,
+          success: true,
         },
         200,
         corsHeaders,
@@ -471,7 +709,6 @@ app.post("*", async (c) => {
     // action = "sends"
     // ----------------------------
     if (action === "sends") {
-
       for (let i = 0; i < sendcount; i++) {
         const processedText = processText(text);
         await client.base.square.sendMessage({ squareChatMid, text: processedText });
@@ -481,10 +718,7 @@ app.post("*", async (c) => {
       return c.json(
         {
           message: `${sendcount} 回メッセージを送信しました`,
-          updatedAuthToken: currentToken,
-          updatedRefreshToken: currentRefreshToken,
-          tokenChanged: currentToken !== authToken,
-          refreshTokenProvided: !!refreshToken,
+          success: true,
         },
         200,
         corsHeaders,
@@ -495,22 +729,15 @@ app.post("*", async (c) => {
     // action = "replyToMessage"
     // ----------------------------
     if (action === "replyToMessage") {
-      const relatedMessageId = body.relatedMessageId;
+      const relatedMessageId = b.relatedMessageId as string | undefined;
       if (!relatedMessageId) {
         return c.json({ error: "relatedMessageId は必須です" }, 400, corsHeaders);
       }
-      await client.base.square.sendMessage({
-        squareChatMid,
-        text,
-        relatedMessageId,
-      });
+      await client.base.square.sendMessage({ squareChatMid, text, relatedMessageId });
       return c.json(
         {
           message: "リプライメッセージを送信しました",
-          updatedAuthToken: currentToken,
-          updatedRefreshToken: currentRefreshToken,
-          tokenChanged: currentToken !== authToken,
-          refreshTokenProvided: !!refreshToken,
+          success: true,
         },
         200,
         corsHeaders,
@@ -567,10 +794,7 @@ app.post("*", async (c) => {
       const responseObj = {
         events: eventsWithImage,
         profiles: Object.fromEntries(profiles),
-        updatedAuthToken: currentToken,
-        updatedRefreshToken: currentRefreshToken,
-        tokenChanged: currentToken !== authToken,
-        refreshTokenProvided: !!refreshToken,
+        success: true,
       };
       const jsonStr = JSON.stringify(responseObj, replacer);
       return new Response(jsonStr, {
@@ -583,11 +807,9 @@ app.post("*", async (c) => {
     // action = "getProfile"
     // ----------------------------
     if (action === "getProfile") {
-      const { pid } = body;
+      const pid = b.pid as string | undefined;
       if (!pid) return c.json({ error: "pid は必須" }, 400, corsHeaders);
-      if (!squareChatMid) {
-        return c.json({ error: "squareChatMid は必須" }, 400, corsHeaders);
-      }
+      if (!squareChatMid) return c.json({ error: "squareChatMid は必須" }, 400, corsHeaders);
       try {
         const squareChat = await client.getSquareChat(squareChatMid);
         const member = (await squareChat.getMembers()).find((m) =>
@@ -632,16 +854,11 @@ app.post("*", async (c) => {
         err.message?.includes("INVALID_TOKEN")
       )
     ) {
-      const cacheKey = `${authToken}_${refreshToken ?? "no-refresh"}`;
-      clientCache.delete(cacheKey);
       return c.json(
         {
           error: "認証エラー",
-          message: refreshToken
-            ? "トークンの有効期限が切れており、リフレッシュにも失敗しました。新しいトークンでログインしてください。"
-            : "トークンの有効期限が切れています。refreshToken を提供するか、新しいトークンでログインしてください。",
+          message: "セッションが無効です。再度ログインしてください。",
           needsReauth: true,
-          refreshTokenProvided: !!refreshToken,
         },
         401,
         corsHeaders,
@@ -652,7 +869,6 @@ app.post("*", async (c) => {
         error: "処理エラー",
         message: "処理中にエラーが発生しました",
         details: err instanceof Error ? err.message : String(err),
-        refreshTokenProvided: !!refreshToken,
       },
       500,
       corsHeaders,
@@ -663,5 +879,11 @@ app.post("*", async (c) => {
 // -----------------------------------------------------------------------------
 // アプリ起動
 // -----------------------------------------------------------------------------
-console.log("[INFO] LINE 操作サーバー (Hono) 起動... http://localhost:8000");
-Deno.serve({ port: 8000 }, (req) => app.fetch(req));
+// Workers エクスポート
+console.log("[INFO] LINE 操作サーバー (Worker) 準備完了");
+export default {
+  fetch(req: Request, env: Env, ctx: unknown) {
+    // Hono の fetch に env を渡すため、c.env で参照可能になります
+    return app.fetch(req, { env, ctx } as unknown as Record<string, unknown>);
+  },
+};

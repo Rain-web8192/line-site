@@ -1,0 +1,10 @@
+name = "line-site-backend"
+main = "backend/main.ts"
+compatibility_date = "2025-10-20"
+workers_dev = true
+
+# D1 バインディング設定の雛形。実際にデータベースを作成したら database_name を指定してください。
+[[d1_databases]]
+binding = "LINE_D1"
+database_name = "line_site_db"
+ 
