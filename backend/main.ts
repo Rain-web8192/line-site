@@ -921,33 +921,92 @@ const handleTotalApi = async (c: Context<{ Bindings: Env }>) => {
       
       if (isPersonalOrGroup) {
         // 個人チャット・グループチャットの場合は Talk API を使用
-        console.debug("[DEBUG] 個人/グループチャットとして処理", { isPersonal, isGroup });
+        console.debug("[DEBUG] 個人/グループチャットとして処理", { isPersonal, isGroup, squareChatMid });
         try {
           let rawMessages: unknown[] = [];
           
           if (isPersonal) {
-            // 個人チャットの場合: sync APIを使用してメッセージを取得
-            console.debug("[DEBUG] 個人チャットのメッセージを sync で取得");
-            const syncResult = await client.base.talk.sync({ limit: 50 });
+            // 個人チャットの場合: メッセージボックスから取得を試みる
+            console.debug("[DEBUG] 個人チャットのメッセージを取得");
             
-            // operationsからメッセージを抽出
-            const operations = (syncResult as { operations?: unknown[] }).operations || [];
-            rawMessages = operations
-              .filter((op: unknown) => {
-                const operation = op as Record<string, unknown>;
-                const opType = operation.type;
-                return opType === 25 || opType === 26; // SEND_MESSAGE=25, RECEIVE_MESSAGE=26
-              })
-              .map((op: unknown) => {
-                const operation = op as Record<string, unknown>;
-                return operation.message;
-              })
-              .filter((msg: unknown) => {
-                const message = msg as Record<string, unknown>;
-                // 対象の個人チャットのメッセージのみフィルタ
-                return message.to === squareChatMid || message.from === squareChatMid;
-              })
-              .slice(0, 50);
+            try {
+              const boxes = await client.base.talk.getMessageBoxes({
+                messageBoxListRequest: {},
+              });
+              console.debug("[DEBUG] メッセージボックス取得完了:", boxes.messageBoxes?.length || 0);
+              
+              // 個人チャットのメッセージボックスを探す
+              const box = boxes.messageBoxes.find((b: unknown) => {
+                const boxData = b as Record<string, unknown>;
+                // 個人チャットの場合、idがユーザーMIDと一致するか、lastMessagesFromUserがある
+                return boxData.id === squareChatMid;
+              });
+              
+              if (box) {
+                console.debug("[DEBUG] メッセージボックスが見つかりました:", (box as unknown as Record<string, unknown>).id);
+                const boxData = box as unknown as {
+                  id: string;
+                  lastDeliveredMessageId?: { messageId: string | number | bigint; deliveredTime: number | bigint };
+                };
+                
+                if (boxData.lastDeliveredMessageId) {
+                  rawMessages = await client.base.talk.getPreviousMessagesV2WithRequest({
+                    request: {
+                      messageBoxId: boxData.id,
+                      endMessageId: {
+                        messageId: typeof boxData.lastDeliveredMessageId.messageId === "string"
+                          ? BigInt(boxData.lastDeliveredMessageId.messageId)
+                          : boxData.lastDeliveredMessageId.messageId,
+                        deliveredTime: typeof boxData.lastDeliveredMessageId.deliveredTime === "bigint"
+                          ? boxData.lastDeliveredMessageId.deliveredTime
+                          : BigInt(boxData.lastDeliveredMessageId.deliveredTime),
+                      },
+                      messagesCount: 50,
+                    },
+                  });
+                  console.debug("[DEBUG] メッセージ取得完了:", Array.isArray(rawMessages) ? rawMessages.length : 0);
+                } else {
+                  console.debug("[DEBUG] lastDeliveredMessageIdがないため、メッセージなし");
+                }
+              } else {
+                console.debug("[DEBUG] メッセージボックスが見つかりませんでした。全メッセージボックスID:", 
+                  boxes.messageBoxes.map((b: unknown) => (b as Record<string, unknown>).id).slice(0, 10));
+              }
+            } catch (err) {
+              console.error("[ERROR] 個人チャットメッセージボックス取得エラー:", err);
+            }
+            
+            // メッセージボックスから取得できなかった場合、sync APIを試す
+            if (rawMessages.length === 0) {
+              console.debug("[DEBUG] sync APIでメッセージ取得を試行");
+              try {
+                const syncResult = await client.base.talk.sync({ limit: 100 });
+                const operations = (syncResult as { operations?: unknown[] }).operations || [];
+                console.debug("[DEBUG] sync operations:", operations.length);
+                
+                rawMessages = operations
+                  .filter((op: unknown) => {
+                    const operation = op as Record<string, unknown>;
+                    const opType = operation.type;
+                    return opType === 25 || opType === 26; // SEND_MESSAGE=25, RECEIVE_MESSAGE=26
+                  })
+                  .map((op: unknown) => {
+                    const operation = op as Record<string, unknown>;
+                    return operation.message;
+                  })
+                  .filter((msg: unknown) => {
+                    if (!msg) return false;
+                    const message = msg as Record<string, unknown>;
+                    // 対象の個人チャットのメッセージのみフィルタ
+                    const isMatch = message.to === squareChatMid || message.from === squareChatMid;
+                    return isMatch;
+                  });
+                  
+                console.debug("[DEBUG] sync APIで取得したメッセージ数:", rawMessages.length);
+              } catch (syncErr) {
+                console.error("[ERROR] sync API エラー:", syncErr);
+              }
+            }
           } else if (isGroup) {
             // グループチャットの場合: メッセージボックスから取得
             console.debug("[DEBUG] グループチャットのメッセージをメッセージボックスから取得");

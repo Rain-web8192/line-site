@@ -143,7 +143,7 @@ export default function App() {
         const autoScroll = el ? el.scrollHeight - el.scrollTop - el.clientHeight < 5 : true
         loadMessages(null, selectedChat.squareChatMid, autoScroll)
       }
-    }, 1000)
+    }, 3000) // 3秒ごとにポーリング（1000ms -> 3000ms）
     return () => clearInterval(pollingRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn, selectedChat])
@@ -268,24 +268,31 @@ export default function App() {
 
       const newEvents = []
       for (const e of data.events) {
-        const msg = e.payload?.receiveMessage?.squareMessage?.message ?? e.payload?.sendMessage?.squareMessage?.message
-        if (!msg) continue
-        if (!lastMessageIds.current.has(msg.id)) {
-          lastMessageIds.current.add(msg.id)
+        // 個人チャット/グループチャットの場合、直接メッセージ情報が入っている
+        const msg = e.payload?.receiveMessage?.squareMessage?.message ?? 
+                    e.payload?.sendMessage?.squareMessage?.message ??
+                    e.payload?.message ?? 
+                    e // 個人チャットの場合は e 自体がメッセージ情報
+        
+        const msgId = msg.id || (e.rawEvent?.payload?.message?.id) || e.id
+        if (!msgId) continue
+        
+        if (!lastMessageIds.current.has(msgId)) {
+          lastMessageIds.current.add(msgId)
           // enrich
-          const isReceive = e.type === 'RECEIVE_MESSAGE'
+          const isReceive = e.isReceive ?? (e.type === 'RECEIVE_MESSAGE')
           let profile = data.profiles?.[msg.from]
-          if (isReceive && !profile) profile = await getProfileIfNeeded(msg.from)
+          if (isReceive && !profile && msg.from) profile = await getProfileIfNeeded(msg.from)
           newEvents.push({
-            id: msg.id,
+            id: msgId,
             isReceive,
-            text: msg.text || '',
-            deliveredTime: msg.deliveredTime,
-            contentType: msg.contentType,
-            messageRelationType: msg.messageRelationType,
-            relatedMessageId: msg.relatedMessageId,
-            profile,
-            rawEvent: e,
+            text: e.text || msg.text || '',
+            deliveredTime: e.deliveredTime || msg.deliveredTime,
+            contentType: e.contentType || msg.contentType,
+            messageRelationType: e.messageRelationType || msg.messageRelationType,
+            relatedMessageId: e.relatedMessageId || msg.relatedMessageId,
+            profile: e.profile || profile,
+            rawEvent: e.rawEvent || e,
             imageData: e.imageData,
             isImage: !!e.isImage,
           })
@@ -302,6 +309,7 @@ export default function App() {
         }, 50)
       }
     } catch (e) {
+      // エラーは無視（ポーリング中のエラーでUIを壊さない）
     }
   }
 
