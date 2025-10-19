@@ -12,6 +12,79 @@ function formatDeliveredTime(deliveredTime) {
   return `${hours}:${minutes}`
 }
 
+// SVGアイコンコンポーネント
+function PersonIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" />
+    </svg>
+  )
+}
+
+function GroupIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M16 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />
+      <circle cx="18" cy="10" r="3" />
+    </svg>
+  )
+}
+
+function OpenchatIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+function HamburgerIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
+function ImageIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <polyline points="21 15 16 10 5 21" />
+    </svg>
+  )
+}
+
+function MicIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 1a3 3 0 0 0-3 3v12a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2m14 0H5m7 12v-4m-4 4h8m-4-4h0" />
+    </svg>
+  )
+}
+
+function PlusIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  )
+}
+
 export default function App() {
   // terms/login
   const [termsText, setTermsText] = useState('')
@@ -516,7 +589,7 @@ export default function App() {
                     const chatId = chat.squareChatMid || chat.squareChatMid
                     const isActive = selectedChat?.squareChatMid === chatId
                     // チャットタイプのアイコン
-                    const typeIcon = chat.chatType === 'personal' ? '👤' : chat.chatType === 'group' ? '👥' : '📱'
+                    const typeIcon = chat.chatType === 'personal' ? <PersonIcon /> : chat.chatType === 'group' ? <GroupIcon /> : <OpenchatIcon />
                     
                     return (
                       <button key={idx} className={`chat-button ${isActive ? 'active' : ''}`} onClick={() => handleSelectChat(chat)}>
@@ -525,7 +598,7 @@ export default function App() {
                             { (chat.chatImageObsHash || chat.chat?.chatImageObsHash) ? (
                               <img className="chat-icon" src={`https://obs.line-scdn.net/${chat.chatImageObsHash || chat.chat?.chatImageObsHash}/preview`} alt="" onError={e => e.currentTarget.style.display = 'none'} />
                             ) : (
-                              <div className="chat-icon-placeholder">{typeIcon}</div>
+                              <div className="chat-icon-placeholder" style={{ color: '#ffffff' }}>{typeIcon}</div>
                             ) }
                           </div>
                           <div className="chat-info">
@@ -557,7 +630,9 @@ export default function App() {
           <div id="rightPaneWrapper">
             <div id="chatHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span id="chatTitle">{selectedChat ? (selectedChat.name || selectedChat.chat?.name) : 'チャットが未選択です'}</span>
-              <button id="settingsButton" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2em' }} title="設定" onClick={() => setShowSettings(true)}>⚙</button>
+              <button id="settingsButton" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e1e1e1' }} title="メニュー" onClick={() => setShowSettings(true)}>
+                <HamburgerIcon />
+              </button>
             </div>
 
           <div id="rightPane" tabIndex={0} style={{ padding: 20, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -595,13 +670,19 @@ export default function App() {
           <div id="replyBox" style={{ display: 'none', background: '#f1f1f1', padding: '6px 10px', borderLeft: '3px solid #888' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span id="replyPreviewText" style={{ fontSize: '0.85em', color: '#333' }}></span>
-              <button id="cancelReply" style={{ background: 'none', border: 'none', fontSize: '1em', color: '#888', cursor: 'pointer' }} onClick={() => { setReplyingToId(null); document.getElementById('replyBox').style.display = 'none' }}>✕</button>
+              <button id="cancelReply" style={{ background: 'none', border: 'none', padding: '2px', color: '#888', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => { setReplyingToId(null); document.getElementById('replyBox').style.display = 'none' }}>
+                <CloseIcon />
+              </button>
             </div>
           </div>
 
           <div id="sendArea">
-            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', fontSize: '1.5em', cursor: 'pointer', padding: '0 8px' }} title="添付">+</button>
-            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', fontSize: '1.3em', cursor: 'pointer', padding: '0 8px' }} title="画像">🖼️</button>
+            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="添付">
+              <PlusIcon />
+            </button>
+            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="画像">
+              <ImageIcon />
+            </button>
             <div className="send-input-wrapper">
               <textarea id="message" ref={messageRef} placeholder="メッセージを入力" onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -610,7 +691,9 @@ export default function App() {
                 }
               }}></textarea>
             </div>
-            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', fontSize: '1.3em', cursor: 'pointer', padding: '0 8px' }} title="音声">🎤</button>
+            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="音声">
+              <MicIcon />
+            </button>
           </div>
           </div>
         )}
@@ -621,7 +704,9 @@ export default function App() {
         <div id="imageModal" style={{ display: 'flex' }}>
           <div className="modal-backdrop" onClick={closeImageModal}></div>
           <div className="modal-content">
-            <button className="modal-close" onClick={closeImageModal}>×</button>
+            <button className="modal-close" style={{ background: 'none', border: 'none', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333' }} onClick={closeImageModal}>
+              <CloseIcon />
+            </button>
             <img id="modalImage" src={modalImageSrc} alt="拡大画像" />
           </div>
         </div>
@@ -634,7 +719,9 @@ export default function App() {
           <div id="settingsContent" style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', padding: 20, borderRadius: 8, width: 300, zIndex: 9999, boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
               <h2 style={{ margin: 0, fontSize: '1.2em' }}>設定</h2>
-              <button id="closeSettings" style={{ background: 'none', border: 'none', fontSize: '1.2em', cursor: 'pointer' }} onClick={() => setShowSettings(false)}>✕</button>
+              <button id="closeSettings" style={{ background: 'none', border: 'none', padding: '2px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333' }} onClick={() => setShowSettings(false)}>
+                <CloseIcon />
+              </button>
             </div>
             <div style={{ marginBottom: 15 }}>
               <label><input type="checkbox" id="readToggle" checked={readToggle} onChange={e => setReadToggle(e.target.checked)} /> 既読を付ける</label>
