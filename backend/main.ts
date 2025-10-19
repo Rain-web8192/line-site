@@ -5,7 +5,7 @@ import {
   loginWithAuthToken,
   Client,
   SquareMessage,
-} from "jsr:@evex/linejs@2.1.7";
+} from "@evex/linejs";
 
 // Cloudflare Worker 環境で使用する env の型
 type Env = Record<string, unknown> & {

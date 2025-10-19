@@ -1,0 +1,17 @@
+{
+  "name": "line-site-backend",
+  "version": "1.0.0",
+  "description": "LINE Bot backend with Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev main.ts --port 8787",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@evex/linejs": "npm:@jsr/evex__linejs@^2.2.0",
+    "hono": "^4.6.9"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "wrangler": "^3.75.0"
+  }
+}
