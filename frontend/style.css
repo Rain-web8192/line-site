@@ -468,9 +468,7 @@ body {
   margin-right: 0;  
 }  
   
-/* 動画専用の追加スタイル */  
-.media-content.video {   
-}
+/* 動画専用の追加スタイル（未使用） */
   
 /* 非表示要素 */  
 #loginArea,  
@@ -840,7 +838,6 @@ body {
     padding: 10px;  
     margin-top: 8px;  
   }  
-}  
 
 .terms-modal {
   position: fixed;
@@ -927,7 +924,6 @@ body {
     padding: 14px 24px;  
     font-size: 14px;  
   }  
-}  
   
 /* アニメーション */  
 @keyframes modalFadeIn {  

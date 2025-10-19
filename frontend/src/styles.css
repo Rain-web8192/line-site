@@ -1,0 +1,6 @@
+/* imported from original style.css - kept minimal for Vite/React demo */
+@import '../style.css';
+
+/* Override body to allow React root full height */
+html, body, #root { height: 100%; }
+body { margin: 0; }
