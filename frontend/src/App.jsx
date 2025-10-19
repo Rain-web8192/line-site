@@ -28,6 +28,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showImageModal, setShowImageModal] = useState(false)
   const [modalImageSrc, setModalImageSrc] = useState('')
+  const [activeTab, setActiveTab] = useState('all') // 'all', 'friends', 'groups', 'openchat'
 
   // chats/messages
   const [chats, setChats] = useState([])
@@ -483,12 +484,34 @@ export default function App() {
             {/* Chat list area - only show when logged in */}
             {isLoggedIn && (
               <>
-                <div style={{ padding: 12, borderBottom: '1px solid #ddd', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h3 style={{ margin: 0 }}>チャット一覧</h3>
-                  <button onClick={handleLogout} style={{ padding: '6px 12px', background: '#ff4444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>ログアウト</button>
+                <div className="left-pane-header">
+                  <div className="left-pane-title">
+                    <span>チャット</span>
+                    <div className="header-buttons">
+                      <button className="header-btn">+ DM</button>
+                      <button className="header-btn">+ グループ</button>
+                    </div>
+                  </div>
+                  <div className="search-bar">
+                    <input type="text" className="search-input" placeholder="トークを検索..." />
+                  </div>
                 </div>
-                <div id="chatButtons" style={{ padding: 12 }} tabIndex={0}>
-                  {chats.map((chat, idx) => {
+                <div className="tabs-container">
+                  <button className={`tab-btn ${activeTab === 'all' ? 'active' : ''}`} onClick={() => setActiveTab('all')}>すべて</button>
+                  <button className={`tab-btn ${activeTab === 'friends' ? 'active' : ''}`} onClick={() => setActiveTab('friends')}>友だち</button>
+                  <button className={`tab-btn ${activeTab === 'groups' ? 'active' : ''}`} onClick={() => setActiveTab('groups')}>グループ</button>
+                  <button className={`tab-btn ${activeTab === 'openchat' ? 'active' : ''}`} onClick={() => setActiveTab('openchat')}>オープンチャット</button>
+                </div>
+                <div id="chatButtons" tabIndex={0}>
+                  {chats
+                    .filter(chat => {
+                      if (activeTab === 'all') return true
+                      if (activeTab === 'friends') return chat.chatType === 'personal'
+                      if (activeTab === 'groups') return chat.chatType === 'group'
+                      if (activeTab === 'openchat') return chat.chatType === 'square' || chat.chatType === 'openchat'
+                      return true
+                    })
+                    .map((chat, idx) => {
                     // チャットIDを統一的に取得
                     const chatId = chat.squareChatMid || chat.squareChatMid
                     const isActive = selectedChat?.squareChatMid === chatId
@@ -516,12 +539,13 @@ export default function App() {
                     )
                   })}
                 </div>
-                <div style={{ padding: 12 }}>
+                <div style={{ padding: '12px 20px', borderTop: '1px solid #333', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button onClick={handleLogout} style={{ padding: '8px 16px', background: '#3a3a3a', color: '#e1e1e1', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.9em' }}>ログアウト</button>
                   <button id="loadMessages" disabled={!selectedChat} onClick={() => {
                     if (!selectedChat) return
                     const chatId = selectedChat.squareChatMid || selectedChat.squareChatMid
                     loadMessages(null, chatId, true)
-                  }}>過去メッセージ取得</button>
+                  }} style={{ padding: '8px 16px', background: '#3a3a3a', color: '#e1e1e1', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.9em' }}>過去メッセージ</button>
                   <span id="messageCount" style={{ marginLeft: 8 }}></span>
                 </div>
               </>
@@ -576,10 +600,17 @@ export default function App() {
           </div>
 
           <div id="sendArea">
-            <label>メッセージ内容:
-              <textarea id="message" ref={messageRef} placeholder="送信したい内容を入力"></textarea>
-            </label>
-            <button id="send" disabled={!selectedChat} onClick={sendMessage}>メッセージ送信</button>
+            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', fontSize: '1.5em', cursor: 'pointer', padding: '0 8px' }} title="添付">+</button>
+            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', fontSize: '1.3em', cursor: 'pointer', padding: '0 8px' }} title="画像">🖼️</button>
+            <div className="send-input-wrapper">
+              <textarea id="message" ref={messageRef} placeholder="メッセージを入力" onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  sendMessage()
+                }
+              }}></textarea>
+            </div>
+            <button style={{ background: 'none', border: 'none', color: '#e1e1e1', fontSize: '1.3em', cursor: 'pointer', padding: '0 8px' }} title="音声">🎤</button>
           </div>
           </div>
         )}

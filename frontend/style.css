@@ -4,7 +4,7 @@ body {
   margin: 0;  
   height: 100vh;  
   box-sizing: border-box;  
-  background: #1a1a1a;  
+  background: #1e1e1e;  
   overflow: hidden;  
   color: #e1e1e1;
 }  
@@ -12,12 +12,12 @@ body {
 #container {  
   display: flex;  
   height: 100vh;  
-  background: #1a1a1a;
+  background: #1e1e1e;
 }  
   
 #leftPane {  
   flex: 0 0 340px;  
-  background: #2b2b2b;  
+  background: #2a2a2a;  
   border-right: 1px solid #3a3a3a;  
   padding: 0;  
   box-shadow: none;  
@@ -30,7 +30,7 @@ body {
 /* ヘッダーエリア */
 .left-pane-header {
   padding: 16px 20px;
-  background: #2b2b2b;
+  background: #2a2a2a;
   border-bottom: 1px solid #3a3a3a;
   position: sticky;
   top: 0;
@@ -39,7 +39,7 @@ body {
 
 .left-pane-title {
   font-size: 1.3em;
-  font-weight: 700;
+  font-weight: 600;
   color: #ffffff;
   margin-bottom: 12px;
   display: flex;
@@ -53,14 +53,15 @@ body {
 }
 
 .header-btn {
-  padding: 6px 12px;
+  padding: 6px 14px;
   background: #3a3a3a;
-  border: 1px solid #4a4a4a;
-  border-radius: 6px;
-  color: #b0b0b0;
+  border: none;
+  border-radius: 4px;
+  color: #e1e1e1;
   font-size: 0.85em;
   cursor: pointer;
   transition: all 0.2s;
+  font-weight: 500;
 }
 
 .header-btn:hover {
@@ -76,65 +77,63 @@ body {
 .search-input {
   width: 100%;
   padding: 10px 16px;
-  background: #1a1a1a;
+  background: #1e1e1e;
   border: 1px solid #3a3a3a;
-  border-radius: 8px;
+  border-radius: 6px;
   color: #e1e1e1;
-  font-size: 0.95em;
+  font-size: 0.9em;
   outline: none;
   transition: all 0.2s;
+  box-sizing: border-box;
 }
 
 .search-input::placeholder {
-  color: #666;
+  color: #767676;
 }
 
 .search-input:focus {
   border-color: #06c755;
-  background: #222;
+  background: #252525;
 }
 
 /* タブエリア */
 .tabs-container {
   display: flex;
-  padding: 12px 20px 0;
-  background: #2b2b2b;
+  padding: 12px 20px 8px;
+  background: #2a2a2a;
   border-bottom: 1px solid #3a3a3a;
-  gap: 8px;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none; /* Firefox */
+}
+
+.tabs-container::-webkit-scrollbar {
+  display: none; /* Chrome, Safari */
 }
 
 .tab-btn {
-  padding: 8px 20px;
+  padding: 8px 16px;
   background: transparent;
   border: none;
   border-radius: 20px;
-  color: #999;
-  font-size: 0.95em;
+  color: #8e8e93;
+  font-size: 0.9em;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
   position: relative;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .tab-btn:hover {
   background: #3a3a3a;
-  color: #e1e1e1;
-}
-
-.tab-btn.active {
-  background: #3a3a3a;
   color: #ffffff;
 }
 
-.tab-btn.active::after {
-  content: '';
-  position: absolute;
-  bottom: -1px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 60%;
-  height: 2px;
-  background: #06c755;
+.tab-btn.active {
+  background: #4a4a4a;
+  color: #ffffff;
 }
   
 #chatButtons {  
@@ -147,10 +146,10 @@ body {
   display: flex;  
   align-items: center;  
   margin: 0;  
-  padding: 14px 20px;  
+  padding: 12px 20px;  
   background: transparent;  
   border: none;  
-  border-bottom: 1px solid #3a3a3a;
+  border-bottom: 1px solid #333;
   text-align: left;  
   cursor: pointer;  
   transition: all 0.15s ease;  
@@ -161,7 +160,7 @@ body {
 }  
   
 .chat-button:hover {  
-  background: #333;  
+  background: #323232;  
 }  
   
 .chat-button:active {  
@@ -171,8 +170,8 @@ body {
 /* アクティブ状態（選択中）のスタイル */  
 .chat-button.active {  
   background: #3a3a3a;  
-  border-left: 3px solid #06c755;
-  padding-left: 17px;
+  border-left: 0;
+  padding-left: 20px;
 }
   
 .chat-button.active .chat-button-name {  
@@ -193,22 +192,15 @@ body {
   
 .chat-icon {  
   width: 48px;  
-  height: 48px;  
-  border-radius: 50%;  
-  object-fit: cover;  
-  object-position: center;
-  background: #4a4a4a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #999;
-  font-size: 1.5em;
+  height: 48px;
+  border-radius: 12px;
+  object-fit: cover;
 }
 
 .chat-icon-placeholder {
   width: 48px;
   height: 48px;
-  border-radius: 50%;
+  border-radius: 12px;
   background: linear-gradient(135deg, #06c755 0%, #04a745 100%);
   display: flex;
   align-items: center;
@@ -228,7 +220,7 @@ body {
 
 .chat-button-name {  
   font-weight: 600;  
-  font-size: 1em;  
+  font-size: 0.95em;  
   color: #e1e1e1;  
   line-height: 1.3;
   overflow: hidden;
@@ -237,8 +229,8 @@ body {
 }  
   
 .chat-button-id {  
-  font-size: 0.85em;  
-  color: #888;  
+  font-size: 0.8em;  
+  color: #767676;  
   font-family: 'Courier New', monospace;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -247,8 +239,8 @@ body {
   
 .chat-member-count {  
   flex-shrink: 0;  
-  color: #888;  
-  font-size: 0.85em;
+  color: #767676;  
+  font-size: 0.8em;
   font-weight: 500;
 }
   
@@ -256,15 +248,15 @@ body {
   flex: 1;  
   display: flex;  
   flex-direction: column;  
-  background: #1a1a1a;  
+  background: #1e1e1e;  
 }  
   
 #chatHeader {  
-  padding: 14px 20px;  
-  font-size: 1.1em;  
-  font-weight: 700;  
-  border-bottom: 1px solid #3a3a3a;  
-  background: #2b2b2b;
+  padding: 16px 20px;  
+  font-size: 1.05em;  
+  font-weight: 600;  
+  border-bottom: 1px solid #333;  
+  background: #2a2a2a;
   color: #ffffff;
   display: flex;
   align-items: center;
@@ -278,7 +270,7 @@ body {
   display: flex;  
   flex-direction: column;  
   gap: 12px;
-  background: #1a1a1a;
+  background: #1e1e1e;
 }  
   
 .profile-icon {  
@@ -325,7 +317,7 @@ body {
   
 .message.left {  
   align-self: flex-start;
-  background: #2b2b2b;
+  background: #2a2a2a;
   color: #e1e1e1;
 }  
   
@@ -360,67 +352,69 @@ body {
 }  
   
 #sendArea {  
-  background: #2b2b2b;  
-  border-top: 1px solid #3a3a3a;  
-  padding: 12px 16px;  
+  background: #2a2a2a;  
+  border-top: 1px solid #333;  
+  padding: 10px 16px;  
   display: flex;  
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  min-height: 60px;
 }
 
 .send-input-wrapper {
   flex: 1;
   display: flex;
   align-items: center;
-  background: #1a1a1a;
+  background: #1e1e1e;
   border: 1px solid #3a3a3a;
-  border-radius: 24px;
-  padding: 0 16px;
+  border-radius: 20px;
+  padding: 8px 16px;
   transition: all 0.2s;
+  min-height: 40px;
 }
 
 .send-input-wrapper:focus-within {
   border-color: #06c755;
-  background: #222;
+  background: #252525;
 }
   
 #sendArea textarea {  
   flex: 1;
-  height: 40px;  
+  max-height: 120px;
+  min-height: 24px;
+  height: 24px;
   font-size: 0.95em;  
-  padding: 10px 0;
+  padding: 0;
   border: none;
   background: transparent;
   color: #e1e1e1;
   resize: none;
   outline: none;
   font-family: inherit;
+  line-height: 1.5;
+  overflow-y: auto;
 }
 
 #sendArea textarea::placeholder {
-  color: #666;
+  color: #767676;
 }
   
 #sendArea button {  
-  padding: 10px 20px;  
-  background: #06c755;  
-  color: white;  
-  border: none;  
-  border-radius: 20px;  
-  cursor: pointer;  
+  background: none;
+  border: none;
+  color: #e1e1e1;
+  cursor: pointer;
   transition: all 0.2s ease;
-  font-weight: 600;
-  font-size: 0.95em;
-  min-width: 60px;
+  padding: 0;
 }  
   
 #sendArea button:hover {  
-  background: #05b04b;
-  transform: scale(1.02);
+  color: #ffffff;
+  transform: scale(1.1);
 }
 
 #sendArea button:active {
-  transform: scale(0.98);
+  transform: scale(0.95);
 }
   
 /* ログイン専用のレイアウト */  
@@ -434,7 +428,7 @@ body {
 }  
   
 .login-container {  
-  background: #2b2b2b;  
+  background: #2a2a2a;  
   border-radius: 16px;  
   padding: 40px;
   color: #e1e1e1;
@@ -486,13 +480,13 @@ body {
   border: 2px solid #3a3a3a;  
   border-radius: 8px;  
   font-size: 1em;
-  background: #1a1a1a;
+  background: #1e1e1e;
   color: #e1e1e1;
   transition: border-color 0.2s ease;  
 }
 
 .input-group input::placeholder {
-  color: #666;
+  color: #767676;
 }
   
 .input-group input:focus {  
@@ -539,7 +533,7 @@ body {
 }  
   
 .login-divider span {  
-  background: #2b2b2b;  
+  background: #2a2a2a;  
   padding: 0 15px;  
   color: #999;  
   font-size: 0.9em;
@@ -547,7 +541,7 @@ body {
 }  
   
 .pincode-display {  
-  background: #1a1a1a;  
+  background: #1e1e1e;  
   border: 1px solid #3a3a3a;  
   border-radius: 8px;  
   padding: 12px;  
@@ -659,7 +653,7 @@ body {
 }  
   
 #termsModal .modal-content {  
-  background: #2b2b2b;  
+  background: #2a2a2a;  
   border-radius: 12px;  
   padding: 32px;  
   max-width: 600px;  
@@ -683,7 +677,7 @@ body {
   
 /* 利用規約コンテンツ */  
 .terms-content {  
-  background: #1a1a1a;  
+  background: #1e1e1e;  
   border: 1px solid #3a3a3a;  
   border-radius: 8px;  
   padding: 20px;  
@@ -700,7 +694,7 @@ body {
 }  
   
 .terms-content::-webkit-scrollbar-track {  
-  background: #2b2b2b;  
+  background: #2a2a2a;  
   border-radius: 4px;  
 }  
   
@@ -719,7 +713,7 @@ body {
   align-items: center;  
   gap: 12px;  
   padding: 16px;  
-  background: #1a1a1a;  
+  background: #1e1e1e;  
   border-radius: 8px;  
   border: 2px solid transparent;  
   transition: all 0.3s ease;  
@@ -748,7 +742,7 @@ body {
   height: 20px;  
   border: 2px solid #3a3a3a;  
   border-radius: 4px;  
-  background: #1a1a1a;  
+  background: #1e1e1e;  
   cursor: pointer;  
   position: relative;  
   transition: all 0.3s ease;  
@@ -892,37 +886,33 @@ body {
   }  
   
   #sendArea {  
-    height: 15vh;  
     padding: 10px;  
     display: flex;  
-    flex-direction: column;  
-  }  
-    
-  /* ラベル部分を横並びに */  
-  #sendArea label {  
-    display: flex;  
-    align-items: center;  
-    gap: 10px;  
-    font-weight: 500;  
-    margin-bottom: 8px;  
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-height: 60px;
   }  
     
   /* テキストエリアを縮小 */  
   #sendArea textarea {  
     flex: 1;  
-    height: 40px; /* 高さを調整 */  
-    font-size: 1.1em;  
-    padding: 8px;  
-    min-height: 40px;  
+    height: 24px;
+    max-height: 100px;
+    font-size: 0.95em;  
+    padding: 0;  
+    min-height: 24px;  
   }  
     
   /* 送信ボタンをラベル横に配置 */  
   #sendArea button {  
-    padding: 8px 15px;  
-    font-size: 1em;  
+    padding: 0 8px;
+    font-size: 1.2em;  
     margin-top: 0; /* margin-topを削除 */  
     white-space: nowrap;  
-    min-width: 60px;  
+    background: none;
+    border: none;
+    color: #e1e1e1;
   }  
   
   .message {  
@@ -1024,7 +1014,7 @@ body {
 
 .terms-content {
   position: relative;
-  background: #2b2b2b;
+  background: #2a2a2a;
   padding: 30px;
   border-radius: 16px;
   box-shadow: 0 15px 30px rgba(0, 0, 0, 0.5);
@@ -1046,7 +1036,7 @@ body {
   font-size: 0.95em;
   line-height: 1.5;
   color: #e1e1e1;
-  background: #1a1a1a;
+  background: #1e1e1e;
   padding: 20px;
   border-radius: 8px;
   border: 1px solid #3a3a3a;
@@ -1128,7 +1118,7 @@ body {
 }  
   
 .modal .modal-content {  
-  background: #2b2b2b;  
+  background: #2a2a2a;  
   border-radius: 12px;  
   padding: 32px;  
   max-width: 500px;  
@@ -1169,21 +1159,20 @@ body {
     font-size: 0.6em;  
   } 
   
-  #sendArea label {  
-    gap: 8px;  
-    font-size: 0.9em;  
-  }  
-    
   #sendArea textarea {  
-    height: 35px;  
-    font-size: 1em;  
-    padding: 6px;  
+    height: 24px;
+    max-height: 80px;
+    font-size: 0.9em;  
+    padding: 0;
+    min-height: 24px;
   }  
     
   #sendArea button {  
-    padding: 6px 12px;  
-    font-size: 0.9em;  
-    min-width: 50px;  
+    padding: 0 6px;  
+    font-size: 1.1em;
+    background: none;
+    border: none;
+    color: #e1e1e1;
   }  
     
   #chatHeader {  
@@ -1220,7 +1209,7 @@ body {
 /* タッチデバイス向けの調整 */  
 @media (hover: none) and (pointer: coarse) {  
   .chat-button:hover {  
-    background: #2b2b2b;  
+    background: #2a2a2a;  
   }  
   
   .login-button:hover {  
@@ -1232,7 +1221,7 @@ body {
   }  
   
   .chat-button:hover {  
-    background: #2b2b2b;  
+    background: #2a2a2a;  
     border-color: #3a3a3a;  
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);  
     transform: none;  
