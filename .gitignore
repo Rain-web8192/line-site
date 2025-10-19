@@ -6,3 +6,4 @@ node_modules
 frontend/node_modules/
 
 backend/.wrangler
+backend/assets

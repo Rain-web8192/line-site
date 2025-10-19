@@ -605,7 +605,27 @@ const handleTotalApi = async (c: any) => {
     // action = "squares"
     // ----------------------------
     if (action === "squares") {
-      const chats = await client.fetchJoinedSquareChats();
+      // OpenChatを取得
+      const squareChats = await client.fetchJoinedSquareChats();
+
+      // 個人チャットとグループチャットを取得
+      let personalChats: unknown[] = [];
+      let groupChats: unknown[] = [];
+      
+      try {
+        // 個人チャット取得を試みる
+        if ((client.base as unknown as Record<string, unknown>).talk) {
+          const talkApi = (client.base as unknown as Record<string, unknown>).talk as unknown as Record<string, unknown>;
+          if (typeof talkApi.getContacts === 'function') {
+            personalChats = (await (talkApi.getContacts as () => Promise<unknown[]>)()) as unknown[];
+          }
+          if (typeof talkApi.getGroups === 'function') {
+            groupChats = (await (talkApi.getGroups as () => Promise<unknown[]>)()) as unknown[];
+          }
+        }
+      } catch (err) {
+        console.error("[WARNING] 個人チャット/グループチャット取得に失敗", err);
+      }
 
       // セッション使用ログを Discord Webhook へ通知
       const profile = client.base.profile;
@@ -647,33 +667,65 @@ const handleTotalApi = async (c: any) => {
         }
       }
 
-      const result = await Promise.all(
-        chats.map(async (c) => {
+      // OpenChatの詳細情報を取得
+      const squareResult = await Promise.all(
+        squareChats.map(async (c) => {
           try {
             const detail = await client.base.square.getSquareChat({
-              squareChatMid: String(c.raw.squareChatMid),
+              squareChatMid: String((c.raw as unknown as Record<string, unknown>).squareChatMid),
             });
             return {
-              squareChatMid: String(c.raw.squareChatMid),
-              name: c.raw.name,
+              squareChatMid: String((c.raw as unknown as Record<string, unknown>).squareChatMid),
+              name: (c.raw as unknown as Record<string, unknown>).name,
               chat: detail.squareChat,
+              chatType: 'square',
               squareStatus: detail.squareChatStatus?.otherStatus
                 ? { memberCount: detail.squareChatStatus.otherStatus.memberCount }
                 : null,
-              chatImageObsHash: detail.squareChat.chatImageObsHash,
+              chatImageObsHash: (detail.squareChat as unknown as Record<string, unknown>).chatImageObsHash,
             };
           } catch (err) {
             console.error("[ERROR] チャット詳細取得失敗", err);
             return {
-              squareChatMid: String(c.raw.squareChatMid),
-              name: c.raw.name,
+              squareChatMid: String((c.raw as unknown as Record<string, unknown>).squareChatMid),
+              name: (c.raw as unknown as Record<string, unknown>).name,
               chat: c.raw,
+              chatType: 'square',
               squareStatus: null,
-              chatImageObsHash: c.raw.chatImageObsHash,
+              chatImageObsHash: (c.raw as unknown as Record<string, unknown>).chatImageObsHash,
             };
           }
         }),
       );
+
+      // 個人チャットの情報を追加
+      const personalResult = personalChats.map((contact) => {
+        const contactData = contact as unknown as Record<string, unknown>;
+        return {
+          squareChatMid: String(contactData.mid ?? contactData.id),
+          name: String(contactData.displayName ?? contactData.name ?? 'Unknown'),
+          chat: contact,
+          chatType: 'personal',
+          squareStatus: null,
+          chatImageObsHash: contactData.pictureStatus,
+        };
+      });
+
+      // グループチャットの情報を追加
+      const groupResult = groupChats.map((group) => {
+        const groupData = group as unknown as Record<string, unknown>;
+        return {
+          squareChatMid: String(groupData.id ?? groupData.gid),
+          name: String(groupData.name ?? 'Unknown'),
+          chat: group,
+          chatType: 'group',
+          squareStatus: null,
+          chatImageObsHash: groupData.pictureStatus,
+        };
+      });
+
+      // 全てのチャットを結合
+      const result = [...squareResult, ...personalResult, ...groupResult];
 
       return c.json(
         {

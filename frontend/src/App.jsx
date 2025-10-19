@@ -148,7 +148,6 @@ export default function App() {
     
     // セッション無効エラーの場合、自動ログアウト
     if (data.needsReauth || data.error === '認証エラー' || res.status === 401) {
-      console.warn('[WARN] セッション無効、ログアウトします')
       setIsLoggedIn(false)
       setShowLoginModal(true)
       setChats([])
@@ -209,17 +208,17 @@ export default function App() {
     if (profileCache.current.has(pid)) return profileCache.current.get(pid)
     if (!selectedChat) return null
     try {
+      const chatId = selectedChat.squareChatMid || selectedChat.squareChatMid
       const response = await fetch('/api/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'getProfile', pid, squareChatMid: selectedChat.squareChatMid }),
+        body: JSON.stringify({ action: 'getProfile', pid, squareChatMid: chatId }),
         credentials: 'include', // Cookieを含める
       })
       const result = await response.json()
       
       // セッション無効エラーの場合、自動ログアウト
       if (result.needsReauth || result.error === '認証エラー' || response.status === 401) {
-        console.warn('[WARN] セッション無効（getProfile）')
         setIsLoggedIn(false)
         setShowLoginModal(true)
         return null
@@ -230,7 +229,6 @@ export default function App() {
         return result.profile
       }
     } catch (e) {
-      console.error('プロフィール取得エラー:', e)
     }
     return null
   }
@@ -248,7 +246,6 @@ export default function App() {
       
       // セッション無効エラーの場合、自動ログアウト
       if (data.needsReauth || data.error === '認証エラー' || res.status === 401) {
-        console.warn('[WARN] セッション無効（loadMessages）')
         setIsLoggedIn(false)
         setShowLoginModal(true)
         return
@@ -293,7 +290,6 @@ export default function App() {
         }, 50)
       }
     } catch (e) {
-      console.error('メッセージ取得中にエラーが発生しました', e)
     }
   }
 
@@ -301,7 +297,9 @@ export default function App() {
     setSelectedChat(chat)
     setChatEvents([])
     lastMessageIds.current.clear()
-    await loadMessages(null, chat.squareChatMid, true)
+    // squareChatMidが無い場合は、chatMidを使用する
+    const chatId = chat.squareChatMid || chat.squareChatMid
+    await loadMessages(null, chatId, true)
   }
 
   async function sendMessage() {
@@ -314,13 +312,13 @@ export default function App() {
         if (messageRef.current) messageRef.current.value = ''
         return
       }
-      const data = await callApi({ action: 'send', squareChatMid: selectedChat.squareChatMid, text })
+      const chatId = selectedChat.squareChatMid || selectedChat.squareChatMid
+      const data = await callApi({ action: 'send', squareChatMid: chatId, text })
       if (data.message) {
         if (messageRef.current) messageRef.current.value = ''
-        await loadMessages(null, selectedChat.squareChatMid, true)
+        await loadMessages(null, chatId, true)
       } else if (data.error) alert(`エラー: ${data.message}`)
-    } catch (e) {
-      console.error('送信エラー:', e)
+    } catch (err) {
       alert('メッセージ送信に失敗しました')
     }
   }
@@ -328,12 +326,12 @@ export default function App() {
   async function replyToMessage(relatedMessageId, text) {
     if (!selectedChat || !text) return alert('必要な情報が不足しています')
     try {
-      const data = await callApi({ action: 'replyToMessage', squareChatMid: selectedChat.squareChatMid, text, relatedMessageId })
+      const chatId = selectedChat.squareChatMid || selectedChat.squareChatMid
+      const data = await callApi({ action: 'replyToMessage', squareChatMid: chatId, text, relatedMessageId })
       if (data.message) {
-        await loadMessages(null, selectedChat.squareChatMid, true)
+        await loadMessages(null, chatId, true)
       } else if (data.error) alert(`エラー: ${data.message}`)
     } catch (e) {
-      console.error('リプライ送信エラー:', e)
       alert('リプライメッセージ送信に失敗しました')
     }
   }
@@ -342,18 +340,18 @@ export default function App() {
     if (!repeatText.trim()) return alert('文字列を入力してください')
     if (repeatCount < 1) return alert('回数は1以上にしてください')
     try {
+      const chatId = selectedChat ? (selectedChat.squareChatMid || selectedChat.squareChatMid) : null
       const res = await fetch('/api/sends/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sendcount: repeatCount, squareChatMid: selectedChat?.squareChatMid, text: repeatText, read: readToggle }),
+        body: JSON.stringify({ sendcount: repeatCount, squareChatMid: chatId, text: repeatText, read: readToggle }),
         credentials: 'include', // Cookieを含める
       })
       if (!res.ok) throw new Error(`送信エラー: ${res.status}`)
       const data = await res.json()
-      console.log('送信結果:', data)
+      if (!res.ok) throw new Error(`送信エラー: ${res.status}`)
       alert('連投送信が開始されました')
     } catch (err) {
-      console.error(err)
       alert('送信に失敗しました')
     }
     setShowSettings(false)
@@ -366,7 +364,7 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'logout' }),
       credentials: 'include',
-    }).catch(console.error)
+    }).catch(() => {})
     
     setIsLoggedIn(false)
     setShowLoginModal(true)
@@ -423,7 +421,6 @@ export default function App() {
                   alert('同意処理に失敗しました')
                 }
               } catch (err) {
-                console.error('同意処理エラー:', err)
                 alert('同意処理中にエラーが発生しました')
               } finally {
                 agreeButton.textContent = originalText
@@ -467,28 +464,40 @@ export default function App() {
                   <button onClick={handleLogout} style={{ padding: '6px 12px', background: '#ff4444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>ログアウト</button>
                 </div>
                 <div id="chatButtons" style={{ padding: 12 }} tabIndex={0}>
-                  {chats.map((chat, idx) => (
-                    <button key={idx} className={`chat-button ${selectedChat?.squareChatMid === (chat.squareChatMid || chat.chat?.squareChatMid) ? 'active' : ''}`} onClick={() => handleSelectChat(chat)}>
-                      <div className="chat-button-content">
-                        <div className="chat-icon-container">
-                          { (chat.chat?.chatImageObsHash || chat.square?.profileImageObsHash) ? (
-                            <img className="chat-icon" src={`https://obs.line-scdn.net/${chat.chat?.chatImageObsHash || chat.square?.profileImageObsHash}/preview`} alt="" onError={e => e.currentTarget.style.display = 'none'} />
-                          ) : (
-                            <div className="chat-icon-placeholder">📱</div>
-                          ) }
+                  {chats.map((chat, idx) => {
+                    // チャットIDを統一的に取得
+                    const chatId = chat.squareChatMid || chat.squareChatMid
+                    const isActive = selectedChat?.squareChatMid === chatId
+                    // チャットタイプのアイコン
+                    const typeIcon = chat.chatType === 'personal' ? '👤' : chat.chatType === 'group' ? '👥' : '📱'
+                    
+                    return (
+                      <button key={idx} className={`chat-button ${isActive ? 'active' : ''}`} onClick={() => handleSelectChat(chat)}>
+                        <div className="chat-button-content">
+                          <div className="chat-icon-container">
+                            { (chat.chatImageObsHash || chat.chat?.chatImageObsHash) ? (
+                              <img className="chat-icon" src={`https://obs.line-scdn.net/${chat.chatImageObsHash || chat.chat?.chatImageObsHash}/preview`} alt="" onError={e => e.currentTarget.style.display = 'none'} />
+                            ) : (
+                              <div className="chat-icon-placeholder">{typeIcon}</div>
+                            ) }
+                          </div>
+                          <div className="chat-info">
+                            <div className="chat-button-name">{chat.name || chat.chat?.name || 'Unknown'}</div>
+                            <div className="chat-button-id">{(chatId || '').slice(0,8)}...</div>
+                          </div>
+                          <div className="chat-member-count">({chat.squareStatus?.memberCount || (chat.chatType === 'personal' ? 1 : 0)}人)</div>
                         </div>
-                        <div className="chat-info">
-                          <div className="chat-button-name">{chat.chat?.name || chat.name || 'Unknown'}</div>
-                          <div className="chat-button-id">{((chat.chat?.squareChatMid || chat.squareChatMid) || '').slice(0,8)}...</div>
-                        </div>
-                        <div className="chat-member-count">({chat.squareStatus?.memberCount || 0}人)</div>
-                      </div>
-                      <div className="chat-button-indicator" />
-                    </button>
-                  ))}
+                        <div className="chat-button-indicator" />
+                      </button>
+                    )
+                  })}
                 </div>
                 <div style={{ padding: 12 }}>
-                  <button id="loadMessages" disabled={!selectedChat} onClick={() => selectedChat && loadMessages(null, selectedChat.squareChatMid, true)}>過去メッセージ取得</button>
+                  <button id="loadMessages" disabled={!selectedChat} onClick={() => {
+                    if (!selectedChat) return
+                    const chatId = selectedChat.squareChatMid || selectedChat.squareChatMid
+                    loadMessages(null, chatId, true)
+                  }}>過去メッセージ取得</button>
                   <span id="messageCount" style={{ marginLeft: 8 }}></span>
                 </div>
               </>
@@ -499,7 +508,7 @@ export default function App() {
         {isLoggedIn && (
           <div id="rightPaneWrapper">
             <div id="chatHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span id="chatTitle">{selectedChat ? (selectedChat.chat?.name || selectedChat.name) : '選択中のOpenChatは未選択です'}</span>
+              <span id="chatTitle">{selectedChat ? (selectedChat.name || selectedChat.chat?.name) : 'チャットが未選択です'}</span>
               <button id="settingsButton" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2em' }} title="設定" onClick={() => setShowSettings(true)}>⚙</button>
             </div>
 
